@@ -5,7 +5,7 @@ export interface Category {
   color: string;
 }
 
-export type PriceSourceType = 'manual' | 'yahoo_kr' | 'yahoo_us' | 'upbit';
+export type PriceSourceType = 'manual' | 'yahoo_kr' | 'yahoo_us' | 'upbit' | 'krx_gold';
 
 export interface PriceSource {
   type: PriceSourceType;
