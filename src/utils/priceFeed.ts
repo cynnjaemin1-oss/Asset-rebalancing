@@ -1,12 +1,20 @@
 import { Asset, PriceSource } from '../types';
 
+// ── allorigins 프록시 헬퍼 ────────────────────────────────────────────────────
+async function fetchViaProxy(targetUrl: string): Promise<unknown> {
+  const proxyUrl = `https://api.allorigins.win/get?url=${encodeURIComponent(targetUrl)}`;
+  const res = await fetch(proxyUrl);
+  if (!res.ok) throw new Error(`프록시 오류: ${res.status}`);
+  const wrapper = await res.json();
+  if (!wrapper.contents) throw new Error('응답 없음');
+  return JSON.parse(wrapper.contents);
+}
+
 // ── Naver Finance (한국 주식/ETF) ─────────────────────────────────────────────
-// m.stock.naver.com API는 모바일 웹용으로 CORS 허용
 async function fetchNaverPrice(code: string): Promise<number> {
-  const url = `https://m.stock.naver.com/api/stock/${code}/basic`;
-  const res = await fetch(url);
-  if (!res.ok) throw new Error(`Naver 오류: ${res.status}`);
-  const data = await res.json();
+  const naverUrl = `https://m.stock.naver.com/api/stock/${code}/basic`;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const data = await fetchViaProxy(naverUrl) as any;
   // closePrice는 "32,510" 형태의 문자열
   const raw = data?.closePrice ?? data?.stockEndPrice;
   if (raw === undefined || raw === null) throw new Error('가격 데이터 없음');
@@ -29,12 +37,8 @@ async function fetchUpbitPrice(coin: string): Promise<number> {
 // ── Yahoo Finance (미국 주식) via allorigins proxy ────────────────────────────
 async function fetchYahooPrice(symbol: string): Promise<number> {
   const yahooUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?interval=1d&range=1d`;
-  const proxyUrl = `https://api.allorigins.win/get?url=${encodeURIComponent(yahooUrl)}`;
-  const res = await fetch(proxyUrl);
-  if (!res.ok) throw new Error(`프록시 오류: ${res.status}`);
-  const wrapper = await res.json();
-  if (!wrapper.contents) throw new Error('응답 없음');
-  const data = JSON.parse(wrapper.contents);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const data = await fetchViaProxy(yahooUrl) as any;
   const price = data?.chart?.result?.[0]?.meta?.regularMarketPrice;
   if (!price) throw new Error('가격 데이터 없음');
   return price;
