@@ -56,13 +56,7 @@ export function calculateRebalance(
 }
 
 export function formatKRW(value: number): string {
-  if (value >= 100_000_000) {
-    return `${(value / 100_000_000).toFixed(2)}억`;
-  }
-  if (value >= 10_000) {
-    return `${(value / 10_000).toFixed(0)}만`;
-  }
-  return value.toLocaleString('ko-KR');
+  return Math.round(value).toLocaleString('ko-KR');
 }
 
 export function generateId(): string {
