@@ -5,6 +5,13 @@ export interface Category {
   color: string;
 }
 
+export type PriceSourceType = 'manual' | 'yahoo_kr' | 'yahoo_us' | 'upbit';
+
+export interface PriceSource {
+  type: PriceSourceType;
+  symbol: string; // KRX 코드(yahoo_kr), 미국티커(yahoo_us), 코인심볼(upbit)
+}
+
 export interface Asset {
   id: string;
   name: string;
@@ -13,6 +20,7 @@ export interface Asset {
   shares: number;
   averagePrice: number;
   currentPrice: number;
+  priceSource?: PriceSource;
 }
 
 export interface RebalanceAction {
