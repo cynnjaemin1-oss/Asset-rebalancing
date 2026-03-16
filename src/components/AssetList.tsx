@@ -10,9 +10,10 @@ interface Props {
   onSave: (asset: Asset) => void;
   onDelete: (id: string) => void;
   onPriceUpdate: (updates: { id: string; price: number }[]) => void;
+  apiKey?: string;
 }
 
-export default function AssetList({ assets, categories, onSave, onDelete, onPriceUpdate }: Props) {
+export default function AssetList({ assets, categories, onSave, onDelete, onPriceUpdate, apiKey }: Props) {
   const [modalOpen, setModalOpen] = useState(false);
   const [editAsset, setEditAsset] = useState<Asset | null>(null);
   const [refreshing, setRefreshing] = useState(false);
@@ -25,7 +26,7 @@ export default function AssetList({ assets, categories, onSave, onDelete, onPric
     setRefreshing(true);
     setRefreshStatus({});
     try {
-      const results = await fetchAllPrices(assets);
+      const results = await fetchAllPrices(assets, apiKey);
       const updates: { id: string; price: number }[] = [];
       const status: Record<string, 'ok' | 'error'> = {};
 

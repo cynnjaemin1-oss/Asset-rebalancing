@@ -4,6 +4,8 @@ interface Props {
   children: ReactNode;
   activeTab: string;
   onTabChange: (tab: string) => void;
+  onSettingsOpen: () => void;
+  hasApiKey: boolean;
 }
 
 const tabs = [
@@ -13,11 +15,21 @@ const tabs = [
   { id: 'rebalance', label: '리밸런싱', icon: '⚖️' },
 ];
 
-export default function Layout({ children, activeTab, onTabChange }: Props) {
+export default function Layout({ children, activeTab, onTabChange, onSettingsOpen, hasApiKey }: Props) {
   return (
     <div className="min-h-screen flex flex-col max-w-lg mx-auto bg-white shadow-sm">
-      <header className="sticky top-0 z-10 bg-white border-b border-gray-200 px-4 py-3">
+      <header className="sticky top-0 z-10 bg-white border-b border-gray-200 px-4 py-3 flex items-center justify-between">
         <h1 className="text-lg font-bold tracking-tight">BalancePro</h1>
+        <button
+          onClick={onSettingsOpen}
+          className="relative p-1.5 rounded-full text-gray-400 hover:text-black"
+          title="설정"
+        >
+          ⚙️
+          {!hasApiKey && (
+            <span className="absolute top-0 right-0 w-2 h-2 bg-red-500 rounded-full" />
+          )}
+        </button>
       </header>
 
       <main className="flex-1 overflow-auto pb-20">{children}</main>
@@ -28,9 +40,7 @@ export default function Layout({ children, activeTab, onTabChange }: Props) {
             key={tab.id}
             onClick={() => onTabChange(tab.id)}
             className={`flex-1 flex flex-col items-center py-2 gap-0.5 text-xs transition-colors ${
-              activeTab === tab.id
-                ? 'text-black font-semibold'
-                : 'text-gray-400'
+              activeTab === tab.id ? 'text-black font-semibold' : 'text-gray-400'
             }`}
           >
             <span className="text-lg leading-none">{tab.icon}</span>

@@ -1,29 +1,22 @@
 import { Asset, PriceSource } from '../types';
 
-// ── allorigins 프록시 헬퍼 ────────────────────────────────────────────────────
-async function fetchViaProxy(targetUrl: string): Promise<unknown> {
-  const proxyUrl = `https://api.allorigins.win/get?url=${encodeURIComponent(targetUrl)}`;
-  const res = await fetch(proxyUrl);
-  if (!res.ok) throw new Error(`프록시 오류: ${res.status}`);
-  const wrapper = await res.json();
-  if (!wrapper.contents) throw new Error('응답 없음');
-  return JSON.parse(wrapper.contents);
+// ── Alpha Vantage (한국/미국 주식) ────────────────────────────────────────────
+// CORS 완전 지원 | 무료 API 키: https://www.alphavantage.co/support/#api-key
+async function fetchAlphaVantagePrice(symbol: string, apiKey: string): Promise<number> {
+  const url =
+    `https://www.alphavantage.co/query?function=GLOBAL_QUOTE` +
+    `&symbol=${encodeURIComponent(symbol)}&apikey=${encodeURIComponent(apiKey)}`;
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`Alpha Vantage 오류: ${res.status}`);
+  const data = await res.json();
+  if (data?.Note) throw new Error('API 호출 한도 초과 (하루 25회). 잠시 후 재시도하세요.');
+  if (data?.['Error Message']) throw new Error('잘못된 심볼입니다.');
+  const price = data?.['Global Quote']?.['05. price'];
+  if (!price) throw new Error('가격 데이터 없음 (심볼 확인 필요)');
+  return Number(price);
 }
 
-// ── Naver Finance (한국 주식/ETF) ─────────────────────────────────────────────
-async function fetchNaverPrice(code: string): Promise<number> {
-  const naverUrl = `https://m.stock.naver.com/api/stock/${code}/basic`;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const data = await fetchViaProxy(naverUrl) as any;
-  // closePrice는 "32,510" 형태의 문자열
-  const raw = data?.closePrice ?? data?.stockEndPrice;
-  if (raw === undefined || raw === null) throw new Error('가격 데이터 없음');
-  const price = typeof raw === 'string' ? Number(raw.replace(/,/g, '')) : Number(raw);
-  if (isNaN(price) || price === 0) throw new Error('가격 파싱 실패');
-  return price;
-}
-
-// ── Upbit (암호화폐) ──────────────────────────────────────────────────────────
+// ── Upbit (암호화폐) ── CORS 지원, API 키 불필요 ──────────────────────────────
 async function fetchUpbitPrice(coin: string): Promise<number> {
   const market = `KRW-${coin.toUpperCase()}`;
   const res = await fetch(`https://api.upbit.com/v1/ticker?markets=${market}`);
@@ -34,23 +27,17 @@ async function fetchUpbitPrice(coin: string): Promise<number> {
   return price;
 }
 
-// ── Yahoo Finance (미국 주식) via allorigins proxy ────────────────────────────
-async function fetchYahooPrice(symbol: string): Promise<number> {
-  const yahooUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?interval=1d&range=1d`;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const data = await fetchViaProxy(yahooUrl) as any;
-  const price = data?.chart?.result?.[0]?.meta?.regularMarketPrice;
-  if (!price) throw new Error('가격 데이터 없음');
-  return price;
-}
-
 // ── 공개 API ──────────────────────────────────────────────────────────────────
-export async function fetchPrice(source: PriceSource): Promise<number> {
+export async function fetchPrice(source: PriceSource, apiKey?: string): Promise<number> {
   switch (source.type) {
-    case 'yahoo_kr':
-      return fetchNaverPrice(source.symbol);
-    case 'yahoo_us':
-      return fetchYahooPrice(source.symbol);
+    case 'yahoo_kr': {
+      if (!apiKey) throw new Error('API 키 필요 — 우측 상단 ⚙️ 설정에서 입력하세요.');
+      return fetchAlphaVantagePrice(`${source.symbol}.KS`, apiKey);
+    }
+    case 'yahoo_us': {
+      if (!apiKey) throw new Error('API 키 필요 — 우측 상단 ⚙️ 설정에서 입력하세요.');
+      return fetchAlphaVantagePrice(source.symbol, apiKey);
+    }
     case 'upbit':
       return fetchUpbitPrice(source.symbol);
     case 'manual':
@@ -66,14 +53,17 @@ export interface PriceFetchResult {
   error?: string;
 }
 
-export async function fetchAllPrices(assets: Asset[]): Promise<PriceFetchResult[]> {
+export async function fetchAllPrices(
+  assets: Asset[],
+  apiKey?: string
+): Promise<PriceFetchResult[]> {
   const linked = assets.filter(
     (a) => a.priceSource && a.priceSource.type !== 'manual'
   );
   return Promise.all(
     linked.map(async (asset) => {
       try {
-        const price = await fetchPrice(asset.priceSource!);
+        const price = await fetchPrice(asset.priceSource!, apiKey);
         return { assetId: asset.id, price };
       } catch (e) {
         return { assetId: asset.id, error: e instanceof Error ? e.message : '오류' };
@@ -84,8 +74,8 @@ export async function fetchAllPrices(assets: Asset[]): Promise<PriceFetchResult[
 
 export const PRICE_SOURCE_LABELS: Record<string, string> = {
   manual: '수동 입력',
-  yahoo_kr: '국내 주식/ETF (네이버 금융)',
-  yahoo_us: '미국 주식 (NYSE/NASDAQ)',
+  yahoo_kr: '국내 주식/ETF (Alpha Vantage)',
+  yahoo_us: '미국 주식 (Alpha Vantage)',
   upbit: '암호화폐 (업비트)',
 };
 
