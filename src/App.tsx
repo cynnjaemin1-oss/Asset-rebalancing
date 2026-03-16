@@ -53,6 +53,15 @@ export default function App() {
     setAssets((prev) => prev.filter((a) => a.id !== id));
   }
 
+  function handlePriceUpdate(updates: { id: string; price: number }[]) {
+    setAssets((prev) =>
+      prev.map((a) => {
+        const update = updates.find((u) => u.id === a.id);
+        return update ? { ...a, currentPrice: update.price } : a;
+      })
+    );
+  }
+
   const pages: Record<string, JSX.Element> = {
     dashboard: <Dashboard assets={assets} categories={categories} />,
     assets: (
@@ -61,6 +70,7 @@ export default function App() {
         categories={categories}
         onSave={saveAsset}
         onDelete={deleteAsset}
+        onPriceUpdate={handlePriceUpdate}
       />
     ),
     allocation: (
