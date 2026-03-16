@@ -1,11 +1,13 @@
 import { Asset, PriceSource } from '../types';
 
+// CORS 프록시 (브라우저에서 Yahoo Finance 직접 호출 불가)
+const CORS_PROXY = 'https://corsproxy.io/?url=';
+
 // Yahoo Finance: 한국 주식/ETF (.KS suffix)
 async function fetchYahooPrice(symbol: string): Promise<number> {
-  const url = `https://query2.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?interval=1d&range=1d`;
-  const res = await fetch(url, {
-    headers: { 'User-Agent': 'Mozilla/5.0' },
-  });
+  const yahooUrl = `https://query2.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?interval=1d&range=1d`;
+  const url = `${CORS_PROXY}${encodeURIComponent(yahooUrl)}`;
+  const res = await fetch(url);
   if (!res.ok) throw new Error(`Yahoo Finance 오류: ${res.status}`);
   const data = await res.json();
   const price = data?.chart?.result?.[0]?.meta?.regularMarketPrice;
