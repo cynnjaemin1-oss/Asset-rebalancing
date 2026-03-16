@@ -5,6 +5,7 @@ import Dashboard from './components/Dashboard';
 import AssetList from './components/AssetList';
 import AllocationSettings from './components/AllocationSettings';
 import RebalancingCalc from './components/RebalancingCalc';
+import InvestPlan from './components/InvestPlan';
 import SettingsModal from './components/SettingsModal';
 import { generateId } from './utils/rebalance';
 
@@ -82,6 +83,7 @@ export default function App() {
     ),
     allocation: <AllocationSettings categories={categories} onUpdate={setCategories} />,
     rebalance: <RebalancingCalc assets={assets} categories={categories} />,
+    invest: <InvestPlan assets={assets} categories={categories} />,
   };
 
   return (

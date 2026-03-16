@@ -13,9 +13,10 @@ const tabs = [
   { id: 'assets', label: '자산', icon: '💼' },
   { id: 'allocation', label: '배분', icon: '🎯' },
   { id: 'rebalance', label: '리밸런싱', icon: '⚖️' },
+  { id: 'invest', label: '투자계획', icon: '💰' },
 ];
 
-export default function Layout({ children, activeTab, onTabChange, onSettingsOpen, hasApiKey }: Props) {
+export default function Layout({ children, activeTab, onTabChange, onSettingsOpen }: Omit<Props, 'hasApiKey'> & { hasApiKey?: boolean }) {
   return (
     <div className="min-h-screen flex flex-col max-w-lg mx-auto bg-white shadow-sm">
       <header className="sticky top-0 z-10 bg-white border-b border-gray-200 px-4 py-3 flex items-center justify-between">
@@ -26,9 +27,6 @@ export default function Layout({ children, activeTab, onTabChange, onSettingsOpe
           title="설정"
         >
           ⚙️
-          {!hasApiKey && (
-            <span className="absolute top-0 right-0 w-2 h-2 bg-red-500 rounded-full" />
-          )}
         </button>
       </header>
 

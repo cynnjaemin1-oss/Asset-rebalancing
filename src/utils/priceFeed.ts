@@ -46,10 +46,41 @@ async function fetchNaverPrice(code: string): Promise<number> {
   return price;
 }
 
-// ── KRX 금현물 — M04020000 (원/g) ────────────────────────────────────────────
-// Naver의 closePrice = 원/g → 그대로 반환 (수량을 g 단위로 입력)
+// ── KRX 금현물 (원/g) ──────────────────────────────────────────────────────
+// 1차: metals.live 무료 API (국제 금 시세 USD/oz) × Upbit USD/KRW / 31.1035
+// 2차 fallback: Yahoo Finance XAUUSD=X
 async function fetchKrxGoldPrice(): Promise<number> {
-  return fetchNaverPrice('M04020000');
+  const [goldUsd, usdKrw] = await Promise.all([
+    fetchGoldUsdPerOz(),
+    fetchUsdKrwRate(),
+  ]);
+  // 국제 금 $/oz → 원/g 변환 (KRX 현물과 소폭 차이 있을 수 있음)
+  return Math.round((goldUsd / 31.1035) * usdKrw);
+}
+
+async function fetchGoldUsdPerOz(): Promise<number> {
+  // 1차: metals.live — 인증 불필요, CORS 허용
+  try {
+    const res = await fetch('https://metals.live/api/spot', {
+      signal: AbortSignal.timeout(8000),
+    });
+    if (!res.ok) throw new Error(`metals.live ${res.status}`);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const data: any = await res.json();
+    const item = Array.isArray(data) ? data[0] : data;
+    const gold = item?.gold ?? item?.xau;
+    if (gold && !isNaN(Number(gold))) return Number(gold);
+    throw new Error('gold field missing');
+  } catch {
+    // 2차: Yahoo Finance XAUUSD=X via proxy
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const data = await fetchWithProxy(
+      'https://query1.finance.yahoo.com/v8/finance/chart/XAUUSD=X?interval=1d&range=1d'
+    ) as any;
+    const price = data?.chart?.result?.[0]?.meta?.regularMarketPrice;
+    if (!price) throw new Error('금 시세 조회 실패 (두 경로 모두 실패)');
+    return price;
+  }
 }
 
 // ── Upbit (암호화폐) ──────────────────────────────────────────────────────────
