@@ -1,44 +1,40 @@
 import { Asset, PriceSource } from '../types';
 
-// ── 멀티-프록시 헬퍼 (timeout + fallback) ────────────────────────────────────
+// ── 멀티-프록시 — Promise.any() 동시 경쟁 ────────────────────────────────────
 async function fetchWithProxy(url: string): Promise<unknown> {
-  const strategies: Array<() => Promise<unknown>> = [
-    // 1) corsproxy.io — URL 그대로 붙임
-    async () => {
-      const res = await fetch(`https://corsproxy.io/?${url}`, {
-        signal: AbortSignal.timeout(8000),
-      });
-      if (!res.ok) throw new Error(`corsproxy ${res.status}`);
-      return res.json();
-    },
-    // 2) allorigins — URL 인코딩
-    async () => {
-      const res = await fetch(
-        `https://api.allorigins.win/get?url=${encodeURIComponent(url)}`,
-        { signal: AbortSignal.timeout(10000) }
-      );
-      if (!res.ok) throw new Error(`allorigins ${res.status}`);
-      const w = await res.json();
-      if (!w.contents) throw new Error('empty');
-      return JSON.parse(w.contents);
-    },
+  const enc = encodeURIComponent(url);
+
+  const attempts: Promise<unknown>[] = [
+    // 1) corsproxy.io
+    fetch(`https://corsproxy.io/?${url}`, { signal: AbortSignal.timeout(10_000) })
+      .then((r) => { if (!r.ok) throw new Error(`corsproxy ${r.status}`); return r.json(); }),
+
+    // 2) allorigins
+    fetch(`https://api.allorigins.win/get?url=${enc}`, { signal: AbortSignal.timeout(12_000) })
+      .then((r) => r.json())
+      .then((w) => { if (!w?.contents) throw new Error('allorigins empty'); return JSON.parse(w.contents); }),
+
+    // 3) codetabs — Naver 허용 여부 양호
+    fetch(`https://api.codetabs.com/v1/proxy?quest=${enc}`, { signal: AbortSignal.timeout(12_000) })
+      .then((r) => { if (!r.ok) throw new Error(`codetabs ${r.status}`); return r.json(); }),
   ];
 
-  const errors: string[] = [];
-  for (const run of strategies) {
-    try { return await run(); } catch (e) {
-      errors.push(e instanceof Error ? e.message : 'err');
-    }
+  try {
+    return await Promise.any(attempts);
+  } catch (agg) {
+    const msgs = (agg as AggregateError)?.errors
+      ?.map((e: unknown) => (e instanceof Error ? e.message : 'err'))
+      .join(' / ') ?? '모든 프록시 실패';
+    throw new Error(`프록시 연결 실패 (${msgs})`);
   }
-  throw new Error(`프록시 연결 실패 (${errors.join(' / ')})`);
 }
 
-// ── Naver Finance (국내 주식/ETF, KRX 금) ─────────────────────────────────────
+// ── Naver Finance (국내 주식/ETF) ─────────────────────────────────────────────
 async function fetchNaverPrice(code: string): Promise<number> {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const data = await fetchWithProxy(
-    `https://m.stock.naver.com/api/stock/${code}/basic`
-  ) as any;
+  const data = (await fetchWithProxy(
+    `https://m.stock.naver.com/api/stock/${code}/basic`,
+  )) as any;
   const raw = data?.closePrice ?? data?.stockEndPrice ?? data?.price;
   if (raw == null) throw new Error('가격 데이터 없음 (코드 확인 필요)');
   const price = typeof raw === 'string' ? Number(raw.replace(/,/g, '')) : Number(raw);
@@ -46,49 +42,35 @@ async function fetchNaverPrice(code: string): Promise<number> {
   return price;
 }
 
-// ── KRX 금현물 (원/g) ──────────────────────────────────────────────────────
-// 1차: metals.live 무료 API (국제 금 시세 USD/oz) × Upbit USD/KRW / 31.1035
-// 2차 fallback: Yahoo Finance XAUUSD=X
+// ── KRX 금현물 (원/g) ─────────────────────────────────────────────────────────
+// Binance PAXG-USDT: PAX Gold = 금 1트로이온스 기반 토큰, CORS 허용, 인증 불필요
+// 원/g = PAXG_USD ÷ 31.1035 × USDT/KRW
 async function fetchKrxGoldPrice(): Promise<number> {
-  const [goldUsd, usdKrw] = await Promise.all([
-    fetchGoldUsdPerOz(),
-    fetchUsdKrwRate(),
-  ]);
-  // 국제 금 $/oz → 원/g 변환 (KRX 현물과 소폭 차이 있을 수 있음)
+  const [goldUsd, usdKrw] = await Promise.all([fetchGoldUsdPerOz(), fetchUsdKrwRate()]);
   return Math.round((goldUsd / 31.1035) * usdKrw);
 }
 
 async function fetchGoldUsdPerOz(): Promise<number> {
-  // 1차: metals.live — 인증 불필요, CORS 허용
-  try {
-    const res = await fetch('https://metals.live/api/spot', {
-      signal: AbortSignal.timeout(8000),
-    });
-    if (!res.ok) throw new Error(`metals.live ${res.status}`);
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const data: any = await res.json();
-    const item = Array.isArray(data) ? data[0] : data;
-    const gold = item?.gold ?? item?.xau;
-    if (gold && !isNaN(Number(gold))) return Number(gold);
-    throw new Error('gold field missing');
-  } catch {
-    // 2차: Yahoo Finance XAUUSD=X via proxy
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const data = await fetchWithProxy(
-      'https://query1.finance.yahoo.com/v8/finance/chart/XAUUSD=X?interval=1d&range=1d'
-    ) as any;
-    const price = data?.chart?.result?.[0]?.meta?.regularMarketPrice;
-    if (!price) throw new Error('금 시세 조회 실패 (두 경로 모두 실패)');
-    return price;
-  }
+  // Binance Public API — CORS 허용, 인증 불필요
+  // PAXG(PAX Gold) = 금 실물 1트로이온스 기반, 스팟 금 시세와 0.1% 이내 차이
+  const res = await fetch(
+    'https://api.binance.com/api/v3/ticker/price?symbol=PAXGUSDT',
+    { signal: AbortSignal.timeout(8_000) },
+  );
+  if (!res.ok) throw new Error(`Binance ${res.status}`);
+  const data = await res.json();
+  const price = parseFloat(data?.price);
+  if (isNaN(price) || price === 0) throw new Error('PAXG 가격 없음');
+  return price;
 }
 
 // ── Upbit (암호화폐) ──────────────────────────────────────────────────────────
 async function fetchUpbitPrice(coin: string): Promise<number> {
   const market = `KRW-${coin.toUpperCase()}`;
-  const res = await fetch(`https://api.upbit.com/v1/ticker?markets=${market}`, {
-    signal: AbortSignal.timeout(8000),
-  });
+  const res = await fetch(
+    `https://api.upbit.com/v1/ticker?markets=${market}`,
+    { signal: AbortSignal.timeout(8_000) },
+  );
   if (!res.ok) throw new Error(`Upbit 오류: ${res.status}`);
   const data = await res.json();
   const price = data?.[0]?.trade_price;
@@ -108,15 +90,15 @@ async function fetchUsdKrwRate(): Promise<number> {
 // ── Yahoo Finance (미국 주식) — via proxy ─────────────────────────────────────
 async function fetchYahooUsdPrice(symbol: string): Promise<number> {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const data = await fetchWithProxy(
-    `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?interval=1d&range=1d`
-  ) as any;
+  const data = (await fetchWithProxy(
+    `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?interval=1d&range=1d`,
+  )) as any;
   const price = data?.chart?.result?.[0]?.meta?.regularMarketPrice;
   if (!price) throw new Error('가격 없음 (심볼 확인)');
   return price;
 }
 
-// ── 공개 API ──────────────────────────────────────────────────────────────────
+// ── Public ────────────────────────────────────────────────────────────────────
 export interface PriceFetchResult {
   assetId: string;
   price?: number;
@@ -127,7 +109,7 @@ export interface PriceFetchResult {
 
 export async function fetchPrice(
   source: PriceSource,
-  _apiKey?: string // 하위 호환성 유지
+  _apiKey?: string,
 ): Promise<{ price: number; priceUsd?: number; usdKrwRate?: number }> {
   switch (source.type) {
     case 'yahoo_kr':
@@ -154,11 +136,9 @@ export async function fetchPrice(
 
 export async function fetchAllPrices(
   assets: Asset[],
-  apiKey?: string
+  apiKey?: string,
 ): Promise<PriceFetchResult[]> {
-  const linked = assets.filter(
-    (a) => a.priceSource && a.priceSource.type !== 'manual'
-  );
+  const linked = assets.filter((a) => a.priceSource && a.priceSource.type !== 'manual');
   return Promise.all(
     linked.map(async (asset) => {
       try {
@@ -167,7 +147,7 @@ export async function fetchAllPrices(
       } catch (e) {
         return { assetId: asset.id, error: e instanceof Error ? e.message : '오류' };
       }
-    })
+    }),
   );
 }
 
@@ -183,5 +163,5 @@ export const SYMBOL_HINTS: Record<string, string> = {
   yahoo_kr: '예: 396500 (TIGER 반도체TOP10), 305540 (TIGER 미국테크TOP10)',
   yahoo_us: '예: QQQ, AAPL, MSFT, SPY',
   upbit: '예: BTC, ETH, XRP',
-  krx_gold: '심볼 불필요 — M04020000 자동조회 | 수량: 보유 그램(g) 수 입력',
+  krx_gold: '심볼 불필요 — Binance PAXG 기준 원/g 자동계산 | 수량: 보유 g 수 입력',
 };
