@@ -66,7 +66,33 @@ export default function AssetList({ assets, categories, onSave, onDelete, onPric
       {assets.length === 0 ? (
         <div className="text-center py-16 text-gray-400 text-sm">자산을 추가해보세요</div>
       ) : (
-        <div className="space-y-3">
+        <>
+          {/* 전체 손익 요약 */}
+          {(() => {
+            const totalValue = assets.reduce((s, a) => s + a.shares * a.currentPrice, 0);
+            const totalCost  = assets.reduce((s, a) => s + a.shares * a.averagePrice, 0);
+            const totalGain  = totalValue - totalCost;
+            const totalGainPct = totalCost > 0 ? (totalGain / totalCost) * 100 : 0;
+            return (
+              <div className="bg-gray-50 rounded-2xl p-4 flex justify-between items-center">
+                <div>
+                  <div className="text-xs text-gray-400">총 평가금액</div>
+                  <div className="font-bold text-base">₩{formatKRW(totalValue)}</div>
+                </div>
+                <div className="text-right">
+                  <div className="text-xs text-gray-400">총 손익</div>
+                  <div className={`font-bold text-base ${totalGain >= 0 ? 'text-red-500' : 'text-blue-500'}`}>
+                    {totalGain >= 0 ? '+' : ''}₩{formatKRW(Math.abs(totalGain))}
+                  </div>
+                  <div className={`text-xs ${totalGain >= 0 ? 'text-red-400' : 'text-blue-400'}`}>
+                    {totalGain >= 0 ? '+' : ''}{totalGainPct.toFixed(2)}%
+                  </div>
+                </div>
+              </div>
+            );
+          })()}
+
+          <div className="space-y-3">
           {assets.map((asset) => {
             const value = asset.shares * asset.currentPrice;
             const gain = asset.shares * (asset.currentPrice - asset.averagePrice);
@@ -128,8 +154,11 @@ export default function AssetList({ assets, categories, onSave, onDelete, onPric
                     <div className="text-sm font-semibold">₩{formatKRW(asset.currentPrice)}</div>
                   </div>
                   <div>
-                    <div className="text-xs text-gray-400">수익률</div>
+                    <div className="text-xs text-gray-400">손익</div>
                     <div className={`text-sm font-semibold ${gain >= 0 ? 'text-red-500' : 'text-blue-500'}`}>
+                      {gain >= 0 ? '+' : '-'}₩{formatKRW(Math.abs(gain))}
+                    </div>
+                    <div className={`text-xs ${gain >= 0 ? 'text-red-400' : 'text-blue-400'}`}>
                       {gain >= 0 ? '+' : ''}{gainPct.toFixed(1)}%
                     </div>
                   </div>
@@ -138,6 +167,7 @@ export default function AssetList({ assets, categories, onSave, onDelete, onPric
             );
           })}
         </div>
+        </>
       )}
 
       <AssetModal
