@@ -5,6 +5,7 @@ import Dashboard from './components/Dashboard';
 import AssetList from './components/AssetList';
 import AllocationSettings from './components/AllocationSettings';
 import RebalancingCalc from './components/RebalancingCalc';
+import SettingsModal from './components/SettingsModal';
 import { generateId } from './utils/rebalance';
 
 const DEFAULT_CATEGORIES: Category[] = [
@@ -25,11 +26,13 @@ function loadFromStorage<T>(key: string, fallback: T): T {
 
 export default function App() {
   const [tab, setTab] = useState('dashboard');
-  const [assets, setAssets] = useState<Asset[]>(() =>
-    loadFromStorage('assets', [])
-  );
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [assets, setAssets] = useState<Asset[]>(() => loadFromStorage('assets', []));
   const [categories, setCategories] = useState<Category[]>(() =>
     loadFromStorage('categories', DEFAULT_CATEGORIES)
+  );
+  const [apiKey, setApiKey] = useState<string>(() =>
+    localStorage.getItem('alphaVantageKey') ?? ''
   );
 
   useEffect(() => {
@@ -40,12 +43,15 @@ export default function App() {
     localStorage.setItem('categories', JSON.stringify(categories));
   }, [categories]);
 
+  function saveApiKey(key: string) {
+    setApiKey(key);
+    localStorage.setItem('alphaVantageKey', key);
+  }
+
   function saveAsset(asset: Asset) {
     setAssets((prev) => {
       const idx = prev.findIndex((a) => a.id === asset.id);
-      return idx >= 0
-        ? prev.map((a) => (a.id === asset.id ? asset : a))
-        : [...prev, asset];
+      return idx >= 0 ? prev.map((a) => (a.id === asset.id ? asset : a)) : [...prev, asset];
     });
   }
 
@@ -56,8 +62,8 @@ export default function App() {
   function handlePriceUpdate(updates: { id: string; price: number }[]) {
     setAssets((prev) =>
       prev.map((a) => {
-        const update = updates.find((u) => u.id === a.id);
-        return update ? { ...a, currentPrice: update.price } : a;
+        const u = updates.find((u) => u.id === a.id);
+        return u ? { ...a, currentPrice: u.price } : a;
       })
     );
   }
@@ -71,17 +77,27 @@ export default function App() {
         onSave={saveAsset}
         onDelete={deleteAsset}
         onPriceUpdate={handlePriceUpdate}
+        apiKey={apiKey}
       />
     ),
-    allocation: (
-      <AllocationSettings categories={categories} onUpdate={setCategories} />
-    ),
+    allocation: <AllocationSettings categories={categories} onUpdate={setCategories} />,
     rebalance: <RebalancingCalc assets={assets} categories={categories} />,
   };
 
   return (
-    <Layout activeTab={tab} onTabChange={setTab}>
+    <Layout
+      activeTab={tab}
+      onTabChange={setTab}
+      onSettingsOpen={() => setSettingsOpen(true)}
+      hasApiKey={!!apiKey}
+    >
       {pages[tab]}
+      <SettingsModal
+        isOpen={settingsOpen}
+        onClose={() => setSettingsOpen(false)}
+        apiKey={apiKey}
+        onSave={saveApiKey}
+      />
     </Layout>
   );
 }

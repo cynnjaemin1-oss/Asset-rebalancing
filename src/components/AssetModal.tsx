@@ -9,6 +9,7 @@ interface Props {
   onSave: (asset: Asset) => void;
   categories: Category[];
   editAsset?: Asset | null;
+  apiKey?: string;
 }
 
 const emptyForm = {
@@ -22,10 +23,11 @@ const emptyForm = {
   priceSymbol: '',
 };
 
-export default function AssetModal({ isOpen, onClose, onSave, categories, editAsset }: Props) {
+export default function AssetModal({ isOpen, onClose, onSave, categories, editAsset, apiKey }: Props) {
   const [formData, setFormData] = useState(emptyForm);
   const [fetching, setFetching] = useState(false);
   const [fetchError, setFetchError] = useState('');
+  const [fetchNote, setFetchNote] = useState('');
 
   useEffect(() => {
     if (editAsset) {
@@ -43,20 +45,28 @@ export default function AssetModal({ isOpen, onClose, onSave, categories, editAs
       setFormData({ ...emptyForm, categoryId: categories[0]?.id ?? '' });
     }
     setFetchError('');
+    setFetchNote('');
   }, [editAsset, categories, isOpen]);
 
   if (!isOpen) return null;
 
+  const needsSymbol = !['manual', 'krx_gold'].includes(formData.priceSourceType);
+
   async function handleFetchPrice() {
-    if (!formData.priceSymbol.trim()) return;
+    if (needsSymbol && !formData.priceSymbol.trim()) return;
     setFetching(true);
     setFetchError('');
+    setFetchNote('');
     try {
-      const price = await fetchPrice({
-        type: formData.priceSourceType,
-        symbol: formData.priceSymbol.trim(),
-      });
-      setFormData((f) => ({ ...f, currentPrice: price }));
+      const result = await fetchPrice(
+        { type: formData.priceSourceType, symbol: formData.priceSymbol.trim() },
+        apiKey
+      );
+      setFormData((f) => ({ ...f, currentPrice: Math.round(result.price) }));
+      if (result.usdKrwRate) {
+        const label = formData.priceSourceType === 'krx_gold' ? '금(XAU)' : `$${result.priceUsd?.toFixed(2)}`;
+        setFetchNote(`${label} × ₩${Math.round(result.usdKrwRate).toLocaleString()}/$ 적용`);
+      }
     } catch (e) {
       setFetchError(e instanceof Error ? e.message : '가격 조회 실패');
     } finally {
@@ -96,32 +106,24 @@ export default function AssetModal({ isOpen, onClose, onSave, categories, editAs
         </div>
 
         <form onSubmit={handleSubmit} className="space-y-4">
-          {/* 기본 정보 */}
           <div className="grid grid-cols-2 gap-4">
             <div className="space-y-1.5">
               <label className={labelCls}>종목명</label>
-              <input
-                type="text" required placeholder="e.g. Apple Inc."
-                className={inputCls} value={formData.name}
-                onChange={(e) => setFormData({ ...formData, name: e.target.value })}
-              />
+              <input type="text" required placeholder="e.g. Apple Inc." className={inputCls}
+                value={formData.name} onChange={(e) => setFormData({ ...formData, name: e.target.value })} />
             </div>
             <div className="space-y-1.5">
               <label className={labelCls}>티커</label>
-              <input
-                type="text" required placeholder="e.g. AAPL"
-                className={inputCls} value={formData.ticker}
-                onChange={(e) => setFormData({ ...formData, ticker: e.target.value.toUpperCase() })}
-              />
+              <input type="text" required placeholder="e.g. AAPL" className={inputCls}
+                value={formData.ticker}
+                onChange={(e) => setFormData({ ...formData, ticker: e.target.value.toUpperCase() })} />
             </div>
           </div>
 
           <div className="space-y-1.5">
             <label className={labelCls}>카테고리</label>
-            <select
-              required className={inputCls} value={formData.categoryId}
-              onChange={(e) => setFormData({ ...formData, categoryId: e.target.value })}
-            >
+            <select required className={inputCls} value={formData.categoryId}
+              onChange={(e) => setFormData({ ...formData, categoryId: e.target.value })}>
               {categories.map((cat) => (
                 <option key={cat.id} value={cat.id}>{cat.name}</option>
               ))}
@@ -131,79 +133,74 @@ export default function AssetModal({ isOpen, onClose, onSave, categories, editAs
           <div className="grid grid-cols-2 gap-4">
             <div className="space-y-1.5">
               <label className={labelCls}>보유 수량</label>
-              <input
-                type="number" min="0" step="0.0001" className={inputCls}
+              <input type="number" min="0" step="0.0001" className={inputCls}
                 value={formData.shares || ''}
-                onChange={(e) => setFormData({ ...formData, shares: Number(e.target.value) })}
-              />
+                onChange={(e) => setFormData({ ...formData, shares: Number(e.target.value) })} />
             </div>
             <div className="space-y-1.5">
-              <label className={labelCls}>평균단가</label>
-              <input
-                type="number" min="0" className={inputCls}
+              <label className={labelCls}>평균단가 (원)</label>
+              <input type="number" min="0" className={inputCls}
                 value={formData.averagePrice || ''}
-                onChange={(e) => setFormData({ ...formData, averagePrice: Number(e.target.value) })}
-              />
+                onChange={(e) => setFormData({ ...formData, averagePrice: Number(e.target.value) })} />
             </div>
           </div>
 
-          {/* 현재가 연동 섹션 */}
+          {/* 현재가 연동 */}
           <div className="bg-gray-50 rounded-2xl p-4 space-y-3">
             <div className="space-y-1.5">
               <label className={labelCls}>현재가 연동</label>
-              <select
-                className={inputCls}
-                value={formData.priceSourceType}
-                onChange={(e) =>
-                  setFormData({ ...formData, priceSourceType: e.target.value as PriceSourceType, priceSymbol: '' })
-                }
-              >
+              <select className={inputCls} value={formData.priceSourceType}
+                onChange={(e) => setFormData({ ...formData, priceSourceType: e.target.value as PriceSourceType, priceSymbol: '' })}>
                 {(Object.keys(PRICE_SOURCE_LABELS) as PriceSourceType[]).map((key) => (
                   <option key={key} value={key}>{PRICE_SOURCE_LABELS[key]}</option>
                 ))}
               </select>
             </div>
 
-            {isLinked && (
+            {/* 심볼 입력 (금현물은 불필요) */}
+            {isLinked && needsSymbol && (
               <div className="space-y-1.5">
                 <label className={labelCls}>심볼 / 코드</label>
                 <div className="flex gap-2">
-                  <input
-                    type="text"
-                    className={`${inputCls} flex-1`}
+                  <input type="text" className={`${inputCls} flex-1`}
                     placeholder={SYMBOL_HINTS[formData.priceSourceType]}
                     value={formData.priceSymbol}
-                    onChange={(e) => setFormData({ ...formData, priceSymbol: e.target.value })}
-                  />
-                  <button
-                    type="button"
-                    onClick={handleFetchPrice}
+                    onChange={(e) => setFormData({ ...formData, priceSymbol: e.target.value })} />
+                  <button type="button" onClick={handleFetchPrice}
                     disabled={fetching || !formData.priceSymbol.trim()}
-                    className="px-4 py-2 bg-black text-white rounded-2xl text-sm font-medium disabled:opacity-40 whitespace-nowrap"
-                  >
+                    className="px-4 py-2 bg-black text-white rounded-2xl text-sm font-medium disabled:opacity-40 whitespace-nowrap">
                     {fetching ? '조회중' : '조회'}
                   </button>
                 </div>
                 <p className="text-xs text-gray-400">{SYMBOL_HINTS[formData.priceSourceType]}</p>
-                {fetchError && <p className="text-xs text-red-500">{fetchError}</p>}
               </div>
             )}
 
+            {/* 금현물: 조회 버튼만 */}
+            {isLinked && !needsSymbol && formData.priceSourceType === 'krx_gold' && (
+              <div className="space-y-1.5">
+                <p className="text-xs text-gray-400">{SYMBOL_HINTS['krx_gold']}</p>
+                <button type="button" onClick={handleFetchPrice} disabled={fetching}
+                  className="w-full py-2 bg-black text-white rounded-2xl text-sm font-medium disabled:opacity-40">
+                  {fetching ? '조회중...' : '현재가 조회'}
+                </button>
+              </div>
+            )}
+
+            {fetchError && <p className="text-xs text-red-500">{fetchError}</p>}
+            {fetchNote && <p className="text-xs text-blue-500">{fetchNote}</p>}
+
             <div className="space-y-1.5">
-              <label className={labelCls}>현재가 {isLinked && <span className="text-green-500 normal-case font-normal">· 연동됨</span>}</label>
-              <input
-                type="number" min="0" className={inputCls}
+              <label className={labelCls}>
+                현재가 (원){isLinked && <span className="text-green-500 normal-case font-normal ml-1">· 연동됨</span>}
+              </label>
+              <input type="number" min="0" className={inputCls}
                 value={formData.currentPrice || ''}
-                onChange={(e) => setFormData({ ...formData, currentPrice: Number(e.target.value) })}
-                readOnly={false}
-              />
+                onChange={(e) => setFormData({ ...formData, currentPrice: Number(e.target.value) })} />
             </div>
           </div>
 
-          <button
-            type="submit"
-            className="w-full py-3 bg-black text-white rounded-2xl font-semibold text-sm"
-          >
+          <button type="submit" className="w-full py-3 bg-black text-white rounded-2xl font-semibold text-sm">
             {editAsset ? '수정 완료' : '추가하기'}
           </button>
         </form>
