@@ -69,6 +69,35 @@ export default function App() {
     );
   }
 
+  function exportData() {
+    const data = JSON.stringify({ assets, categories }, null, 2);
+    const blob = new Blob([data], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `balancepro-backup-${new Date().toISOString().slice(0, 10)}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  function importData(file: File) {
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      try {
+        const parsed = JSON.parse(e.target?.result as string);
+        if (parsed.assets && parsed.categories) {
+          setAssets(parsed.assets);
+          setCategories(parsed.categories);
+        } else {
+          alert('올바른 백업 파일이 아닙니다.');
+        }
+      } catch {
+        alert('파일을 읽을 수 없습니다.');
+      }
+    };
+    reader.readAsText(file);
+  }
+
   const pages: Record<string, JSX.Element> = {
     dashboard: <Dashboard assets={assets} categories={categories} />,
     assets: (
@@ -99,6 +128,8 @@ export default function App() {
         onClose={() => setSettingsOpen(false)}
         apiKey={apiKey}
         onSave={saveApiKey}
+        onExport={exportData}
+        onImport={importData}
       />
     </Layout>
   );

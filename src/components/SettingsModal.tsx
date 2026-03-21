@@ -3,9 +3,11 @@ interface Props {
   onClose: () => void;
   apiKey: string;
   onSave: (key: string) => void;
+  onExport: () => void;
+  onImport: (file: File) => void;
 }
 
-export default function SettingsModal({ isOpen, onClose, apiKey, onSave }: Props) {
+export default function SettingsModal({ isOpen, onClose, apiKey, onSave, onExport, onImport }: Props) {
   if (!isOpen) return null;
 
   return (
@@ -61,6 +63,35 @@ export default function SettingsModal({ isOpen, onClose, apiKey, onSave }: Props
           >
             저장
           </button>
+        </div>
+
+        <div className="space-y-3 border-t border-gray-100 pt-4">
+          <div>
+            <div className="font-semibold text-sm">데이터 백업 / 복원</div>
+            <div className="text-xs text-gray-400 mt-0.5">
+              다른 기기에서 사용하려면 백업 파일을 내보낸 후 가져오세요.
+            </div>
+          </div>
+          <div className="flex gap-2">
+            <button
+              onClick={onExport}
+              className="flex-1 py-3 border border-gray-200 rounded-2xl text-sm font-medium"
+            >
+              📤 내보내기
+            </button>
+            <label className="flex-1 py-3 border border-gray-200 rounded-2xl text-sm font-medium text-center cursor-pointer">
+              📥 가져오기
+              <input
+                type="file"
+                accept=".json"
+                className="hidden"
+                onChange={(e) => {
+                  const file = e.target.files?.[0];
+                  if (file) { onImport(file); onClose(); }
+                }}
+              />
+            </label>
+          </div>
         </div>
       </div>
     </div>

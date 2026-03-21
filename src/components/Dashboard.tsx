@@ -27,7 +27,7 @@ export default function Dashboard({ assets, categories }: Props) {
       <div className="bg-black text-white rounded-3xl p-5 space-y-1">
         <div className="text-xs text-white/60 uppercase tracking-wider">총 평가금액</div>
         <div className="text-3xl font-bold">₩{formatKRW(totalValue)}</div>
-        <div className={`text-sm font-medium ${totalGain >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+        <div className={`text-sm font-medium ${totalGain >= 0 ? 'text-red-400' : 'text-blue-400'}`}>
           {totalGain >= 0 ? '+' : ''}₩{formatKRW(Math.abs(totalGain))} ({gainPct >= 0 ? '+' : ''}{gainPct.toFixed(2)}%)
         </div>
       </div>
