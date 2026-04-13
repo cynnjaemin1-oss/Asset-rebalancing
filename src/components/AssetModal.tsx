@@ -21,6 +21,8 @@ interface FormState {
   currentPrice: string;
   priceSourceType: PriceSourceType;
   priceSymbol: string;
+  investCapEnabled: boolean;
+  investCap: string;     // 투자 한도 (원), 비어있으면 무제한
 }
 
 function toStr(n: number) {
@@ -32,6 +34,7 @@ export default function AssetModal({ isOpen, onClose, onSave, categories, editAs
     name: '', ticker: '', categoryId: categories[0]?.id ?? '',
     shares: '', averagePrice: '', currentPrice: '',
     priceSourceType: 'manual', priceSymbol: '',
+    investCapEnabled: false, investCap: '',
   };
 
   const [form, setForm] = useState<FormState>(empty);
@@ -51,6 +54,8 @@ export default function AssetModal({ isOpen, onClose, onSave, categories, editAs
         currentPrice: toStr(editAsset.currentPrice),
         priceSourceType: editAsset.priceSource?.type ?? 'manual',
         priceSymbol: editAsset.priceSource?.symbol ?? '',
+        investCapEnabled: editAsset.investCap != null,
+        investCap: editAsset.investCap != null ? String(editAsset.investCap) : '',
       });
     } else {
       setForm({ ...empty, categoryId: categories[0]?.id ?? '' });
@@ -90,6 +95,7 @@ export default function AssetModal({ isOpen, onClose, onSave, categories, editAs
 
   function handleSubmit(e: FormEvent) {
     e.preventDefault();
+    const capVal = form.investCapEnabled ? parseFloat(form.investCap.replace(/,/g, '')) : NaN;
     onSave({
       id: editAsset?.id ?? generateId(),
       name: form.name,
@@ -102,6 +108,7 @@ export default function AssetModal({ isOpen, onClose, onSave, categories, editAs
         form.priceSourceType !== 'manual'
           ? { type: form.priceSourceType, symbol: form.priceSymbol.trim() }
           : undefined,
+      investCap: form.investCapEnabled && !isNaN(capVal) && capVal > 0 ? capVal : undefined,
     });
     onClose();
   }
@@ -232,6 +239,51 @@ export default function AssetModal({ isOpen, onClose, onSave, categories, editAs
                     setForm({ ...form, currentPrice: e.target.value });
                 }} />
             </div>
+          </div>
+
+          {/* 투자 한도 (ISA 등) */}
+          <div className="bg-gray-50 rounded-2xl p-4 space-y-3">
+            <div className="flex items-center justify-between">
+              <div>
+                <label className={labelCls}>투자 한도</label>
+                <p className="text-xs text-gray-400 mt-0.5">ISA 연한도 등 매수 상한 설정</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setForm((f) => ({ ...f, investCapEnabled: !f.investCapEnabled, investCap: '' }))}
+                className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
+                  form.investCapEnabled ? 'bg-black' : 'bg-gray-300'
+                }`}
+              >
+                <span
+                  className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                    form.investCapEnabled ? 'translate-x-6' : 'translate-x-1'
+                  }`}
+                />
+              </button>
+            </div>
+            {form.investCapEnabled && (
+              <div className="space-y-1.5">
+                <label className={labelCls}>최대 매수 금액 (원)</label>
+                <div className="flex items-center gap-2">
+                  <span className="text-gray-400 font-medium">₩</span>
+                  <input
+                    type="text"
+                    inputMode="numeric"
+                    placeholder="20,000,000"
+                    className={`${inputCls} flex-1`}
+                    value={form.investCap}
+                    onChange={(e) => {
+                      const raw = e.target.value.replace(/[^0-9]/g, '');
+                      setForm((f) => ({ ...f, investCap: raw === '' ? '' : Number(raw).toLocaleString() }));
+                    }}
+                  />
+                </div>
+                <p className="text-xs text-gray-400">
+                  설정 시 투자계획에서 이 금액까지만 매수하고 초과분은 같은 카테고리의 다른 자산으로 배분됩니다
+                </p>
+              </div>
+            )}
           </div>
 
           <button type="submit" className="w-full py-3 bg-black text-white rounded-2xl font-semibold text-sm">
