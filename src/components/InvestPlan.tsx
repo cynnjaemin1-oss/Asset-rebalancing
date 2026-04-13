@@ -17,6 +17,7 @@ interface PlanRow {
   buyShares: number;    // 추천 매수 수량
   newValue: number;     // 매수 후 평가금액
   newPct: number;       // 매수 후 비율
+  capped: boolean;      // 투자 한도에 의해 금액이 제한됨
 }
 
 export default function InvestPlan({ assets, categories }: Props) {
@@ -45,34 +46,58 @@ export default function InvestPlan({ assets, categories }: Props) {
       catAssets[a.categoryId].push(a);
     }
 
-    // 각 자산의 대상 금액 계산 (카테고리 내 균등 분배)
-    const targets: Map<string, number> = new Map();
+    // 카테고리별: 균등 분배 기준 gap 계산 → investCap 적용 → 초과분 재배분
+    const effectiveGaps: Map<string, number> = new Map();
+    const cappedAssets: Set<string> = new Set();
+
     for (const cat of categories) {
       const group = catAssets[cat.id] ?? [];
       if (group.length === 0) continue;
       const catTarget = newTotal * (cat.targetPercent / 100);
       const perAsset = catTarget / group.length;
-      for (const a of group) targets.set(a.id, perAsset);
+
+      // 1단계: 균등 분배 기준 raw gap 계산
+      let freed = 0;
+      const uncapped: Asset[] = [];
+      for (const a of group) {
+        const current = a.shares * a.currentPrice;
+        const rawGap = Math.max(0, perAsset - current);
+        if (a.investCap != null && rawGap > a.investCap) {
+          effectiveGaps.set(a.id, a.investCap);
+          freed += rawGap - a.investCap;
+          cappedAssets.add(a.id);
+        } else {
+          effectiveGaps.set(a.id, rawGap);
+          uncapped.push(a);
+        }
+      }
+
+      // 2단계: 초과분을 같은 카테고리 uncapped 자산에 gap 비례로 재배분
+      if (freed > 0 && uncapped.length > 0) {
+        const uncappedGapTotal = uncapped.reduce((s, a) => s + (effectiveGaps.get(a.id) ?? 0), 0);
+        if (uncappedGapTotal > 0) {
+          for (const a of uncapped) {
+            const share = (effectiveGaps.get(a.id) ?? 0) / uncappedGapTotal;
+            effectiveGaps.set(a.id, (effectiveGaps.get(a.id) ?? 0) + freed * share);
+          }
+        } else {
+          // uncapped 자산들도 gap 0 → 균등 분배
+          const perU = freed / uncapped.length;
+          for (const a of uncapped) {
+            effectiveGaps.set(a.id, (effectiveGaps.get(a.id) ?? 0) + perU);
+          }
+        }
+      }
     }
 
-    // gap = max(0, target - current)
-    const gaps: Map<string, number> = new Map();
-    let totalGap = 0;
-    for (const a of assets) {
-      const current = a.shares * a.currentPrice;
-      const target = targets.get(a.id) ?? 0;
-      const gap = Math.max(0, target - current);
-      gaps.set(a.id, gap);
-      totalGap += gap;
-    }
-
-    // 투자금 한도 내에서 비례 배분
+    // 전체 투자금 한도 내 비례 배분
+    const totalGap = [...effectiveGaps.values()].reduce((s, g) => s + g, 0);
     const scale = totalGap > 0 ? Math.min(1, investAmount / totalGap) : 0;
 
     const rows: PlanRow[] = assets.map((a) => {
       const cat = categories.find((c) => c.id === a.categoryId)!;
       const currentValue = a.shares * a.currentPrice;
-      const rawBuy = (gaps.get(a.id) ?? 0) * scale;
+      const rawBuy = (effectiveGaps.get(a.id) ?? 0) * scale;
       const buyAmount = Math.floor(rawBuy);
       const buyShares = a.currentPrice > 0 ? rawBuy / a.currentPrice : 0;
       const newValue = currentValue + buyAmount;
@@ -89,6 +114,7 @@ export default function InvestPlan({ assets, categories }: Props) {
         buyShares,
         newValue,
         newPct: newTotal > 0 ? (newValue / newTotal) * 100 : 0,
+        capped: cappedAssets.has(a.id),
       };
     });
 
@@ -182,7 +208,14 @@ export default function InvestPlan({ assets, categories }: Props) {
                 <div>
                   <span className="font-bold text-sm">{row.asset.ticker}</span>
                   <span className="text-xs text-gray-400 ml-2">{row.asset.name}</span>
-                  <div className="text-xs text-gray-400 mt-0.5">{row.category.name}</div>
+                  <div className="flex items-center gap-1.5 mt-0.5">
+                    <span className="text-xs text-gray-400">{row.category.name}</span>
+                    {row.capped && (
+                      <span className="text-xs px-1.5 py-0.5 rounded-full bg-orange-50 text-orange-500 font-medium">
+                        한도 적용
+                      </span>
+                    )}
+                  </div>
                 </div>
                 {row.buyAmount > 0 ? (
                   <span className="text-xs font-semibold px-2 py-0.5 rounded-full bg-blue-50 text-blue-600">

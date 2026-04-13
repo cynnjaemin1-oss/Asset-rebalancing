@@ -21,6 +21,7 @@ export interface Asset {
   averagePrice: number;
   currentPrice: number;
   priceSource?: PriceSource;
+  investCap?: number; // 이번 투자에서의 최대 매수 금액 한도 (ISA 등)
 }
 
 export interface RebalanceAction {
