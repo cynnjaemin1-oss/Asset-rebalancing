@@ -1,5 +1,19 @@
 import { Asset, Category, RebalanceAction } from '../types';
 
+/** 업비트 암호화폐만 소수점 수량 허용, 나머지(주식/ETF/금)는 정수 절사 */
+export function isFractionalAsset(asset: Asset): boolean {
+  return asset.priceSource?.type === 'upbit';
+}
+
+/** 자산 종류에 맞는 수량 포맷 (주식→주, 암호화폐→개, 금→g) */
+export function formatShares(shares: number, asset: Asset): string {
+  if (asset.priceSource?.type === 'upbit') {
+    return shares >= 1 ? `${shares.toFixed(4)}개` : `${shares.toFixed(6)}개`;
+  }
+  if (asset.priceSource?.type === 'krx_gold') return `${Math.floor(shares)}g`;
+  return `${Math.floor(shares)}주`;
+}
+
 export function calculateRebalance(
   assets: Asset[],
   categories: Category[]
@@ -39,6 +53,13 @@ export function calculateRebalance(
       action = diff > 0 ? 'buy' : 'sell';
     }
 
+    // 암호화폐만 소수점, 나머지는 정수 절사
+    const rawShares = asset.currentPrice > 0 ? Math.abs(diff) / asset.currentPrice : 0;
+    const actionShares = isFractionalAsset(asset) ? rawShares : Math.floor(rawShares);
+    const actionAmount = isFractionalAsset(asset)
+      ? Math.abs(diff)
+      : actionShares * asset.currentPrice;
+
     actions.push({
       asset,
       category,
@@ -47,8 +68,8 @@ export function calculateRebalance(
       targetPercent: assetTargetPercent,
       diffPercent,
       action,
-      actionAmount: Math.abs(diff),
-      actionShares: asset.currentPrice > 0 ? Math.abs(diff) / asset.currentPrice : 0,
+      actionAmount,
+      actionShares,
     });
   }
 

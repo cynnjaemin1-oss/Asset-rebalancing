@@ -1,5 +1,5 @@
 import { Asset, Category } from '../types';
-import { calculateRebalance, formatKRW } from '../utils/rebalance';
+import { calculateRebalance, formatKRW, formatShares } from '../utils/rebalance';
 
 interface Props {
   assets: Asset[];
@@ -86,7 +86,7 @@ export default function RebalancingCalc({ assets, categories }: Props) {
                   {isUnderweight ? '▲ 매수' : '▼ 매도'} ₩{formatKRW(actionAmount)}
                 </div>
                 <div className="text-xs text-gray-400 mt-0.5">
-                  ≈ {actionShares.toFixed(2)}주 (현재가 ₩{formatKRW(asset.currentPrice)})
+                  ≈ {formatShares(actionShares, asset)} (현재가 ₩{formatKRW(asset.currentPrice)})
                 </div>
               </div>
             )}

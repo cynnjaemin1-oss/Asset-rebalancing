@@ -1,6 +1,6 @@
 import { useState, useMemo } from 'react';
 import { Asset, Category } from '../types';
-import { formatKRW } from '../utils/rebalance';
+import { formatKRW, formatShares, isFractionalAsset } from '../utils/rebalance';
 
 interface Props {
   assets: Asset[];
@@ -98,8 +98,12 @@ export default function InvestPlan({ assets, categories }: Props) {
       const cat = categories.find((c) => c.id === a.categoryId)!;
       const currentValue = a.shares * a.currentPrice;
       const rawBuy = (effectiveGaps.get(a.id) ?? 0) * scale;
-      const buyAmount = Math.floor(rawBuy);
-      const buyShares = a.currentPrice > 0 ? rawBuy / a.currentPrice : 0;
+      const rawShares = a.currentPrice > 0 ? rawBuy / a.currentPrice : 0;
+      // 암호화폐만 소수점 수량 허용, 나머지는 정수 절사 후 금액 재계산
+      const buyShares = isFractionalAsset(a) ? rawShares : Math.floor(rawShares);
+      const buyAmount = isFractionalAsset(a)
+        ? Math.floor(rawBuy)
+        : Math.floor(buyShares * a.currentPrice);
       const newValue = currentValue + buyAmount;
       const group = catAssets[a.categoryId] ?? [];
       const targetPct = cat ? cat.targetPercent / group.length : 0;
@@ -258,10 +262,7 @@ export default function InvestPlan({ assets, categories }: Props) {
                 <div className="bg-blue-50 rounded-xl p-3">
                   <div className="flex justify-between text-sm font-semibold text-blue-700">
                     <span>▲ ₩{formatKRW(row.buyAmount)}</span>
-                    <span>{row.buyShares >= 1
-                      ? `${row.buyShares.toFixed(row.buyShares >= 100 ? 0 : 2)}주`
-                      : `${row.buyShares.toFixed(6)}주`}
-                    </span>
+                    <span>{formatShares(row.buyShares, row.asset)}</span>
                   </div>
                   <div className="text-xs text-blue-400 mt-0.5">
                     현재가 ₩{formatKRW(row.asset.currentPrice)} 기준
