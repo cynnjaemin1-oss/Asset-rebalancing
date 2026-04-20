@@ -259,13 +259,19 @@ export default function InvestPlan({ assets, categories }: Props) {
 
               {/* 매수 상세 */}
               {row.buyAmount > 0 && (
-                <div className="bg-blue-50 rounded-xl p-3">
+                <div className="bg-blue-50 rounded-xl p-3 space-y-1.5">
                   <div className="flex justify-between text-sm font-semibold text-blue-700">
                     <span>▲ ₩{formatKRW(row.buyAmount)}</span>
                     <span>{formatShares(row.buyShares, row.asset)}</span>
                   </div>
-                  <div className="text-xs text-blue-400 mt-0.5">
+                  <div className="text-xs text-blue-400">
                     현재가 ₩{formatKRW(row.asset.currentPrice)} 기준
+                  </div>
+                  <div className="flex items-center gap-1.5 text-xs pt-0.5 border-t border-blue-100">
+                    <span className="text-gray-500">평가금액</span>
+                    <span className="font-medium text-gray-600">₩{formatKRW(row.currentValue)}</span>
+                    <span className="text-blue-400">→</span>
+                    <span className="font-semibold text-blue-700">₩{formatKRW(row.newValue)}</span>
                   </div>
                 </div>
               )}
