@@ -277,8 +277,14 @@ export default function InvestPlan({ assets, categories }: Props) {
               )}
 
               {row.buyAmount === 0 && (
-                <div className="text-xs text-gray-400 text-center py-1">
-                  목표 비율 초과 — 이번 투자에서 제외
+                <div className="bg-gray-50 rounded-xl p-3 space-y-1">
+                  <div className="text-xs text-gray-400 text-center">
+                    목표 비율 초과 — 이번 투자에서 제외
+                  </div>
+                  <div className="flex items-center justify-center gap-1.5 text-xs pt-0.5 border-t border-gray-200">
+                    <span className="text-gray-500">평가금액</span>
+                    <span className="font-semibold text-gray-700">₩{formatKRW(row.currentValue)}</span>
+                  </div>
                 </div>
               )}
             </div>
