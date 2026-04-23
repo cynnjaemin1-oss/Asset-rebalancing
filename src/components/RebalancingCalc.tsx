@@ -1,5 +1,5 @@
 import { Asset, Category } from '../types';
-import { calculateRebalance, formatKRW, formatShares } from '../utils/rebalance';
+import { calculateCategoryRebalance, formatKRW, formatShares } from '../utils/rebalance';
 
 interface Props {
   assets: Asset[];
@@ -7,7 +7,7 @@ interface Props {
 }
 
 export default function RebalancingCalc({ assets, categories }: Props) {
-  const actions = calculateRebalance(assets, categories);
+  const actions = calculateCategoryRebalance(assets, categories);
   const totalValue = assets.reduce((s, a) => s + a.shares * a.currentPrice, 0);
 
   const totalTargetPct = categories.reduce((s, c) => s + c.targetPercent, 0);
@@ -36,32 +36,26 @@ export default function RebalancingCalc({ assets, categories }: Props) {
         <span className="text-xs text-gray-400">총 ₩{formatKRW(totalValue)}</span>
       </div>
 
-      {actions.map(({ asset, action, currentPercent, targetPercent, actionAmount, actionShares, diffPercent }) => {
+      {actions.map(({ category, assets: catAssets, currentPercent, targetPercent, diffPercent, action, actionAmount }) => {
         const isOverweight = action === 'sell';
         const isUnderweight = action === 'buy';
 
         return (
-          <div key={asset.id} className="bg-white border border-gray-100 rounded-2xl p-4 shadow-sm">
-            <div className="flex items-start justify-between mb-3">
-              <div>
-                <span className="font-bold text-sm">{asset.ticker}</span>
-                <span className="text-xs text-gray-400 ml-2">{asset.name}</span>
-              </div>
-              <span
-                className={`text-xs font-semibold px-2 py-0.5 rounded-full ${
-                  isUnderweight
-                    ? 'bg-blue-50 text-blue-600'
-                    : isOverweight
-                    ? 'bg-red-50 text-red-500'
-                    : 'bg-green-50 text-green-600'
-                }`}
-              >
-                {isUnderweight ? '매수' : isOverweight ? '매도' : '유지'}
+          <div key={category.id} className="bg-white border border-gray-100 rounded-2xl p-4 shadow-sm space-y-3">
+            {/* 카테고리 헤더 */}
+            <div className="flex items-center justify-between">
+              <span className="font-bold text-sm">{category.name}</span>
+              <span className={`text-xs font-semibold px-2 py-0.5 rounded-full ${
+                isUnderweight ? 'bg-blue-50 text-blue-600'
+                : isOverweight ? 'bg-red-50 text-red-500'
+                : 'bg-green-50 text-green-600'
+              }`}>
+                {isUnderweight ? '매수 필요' : isOverweight ? '매도 필요' : '목표 달성'}
               </span>
             </div>
 
-            {/* Progress bar */}
-            <div className="relative h-2 bg-gray-100 rounded-full mb-2">
+            {/* 비중 진행 바 */}
+            <div className="relative h-2 bg-gray-100 rounded-full">
               <div
                 className="absolute h-2 bg-gray-800 rounded-full"
                 style={{ width: `${Math.min(currentPercent, 100)}%` }}
@@ -71,25 +65,44 @@ export default function RebalancingCalc({ assets, categories }: Props) {
                 style={{ left: `${Math.min(targetPercent, 100)}%` }}
               />
             </div>
-
-            <div className="flex justify-between text-xs text-gray-500 mb-3">
+            <div className="flex justify-between text-xs text-gray-500">
               <span>현재 {currentPercent.toFixed(1)}%</span>
-              <span className={Math.abs(diffPercent) > 1 ? 'text-orange-500 font-semibold' : ''}>
+              <span className={Math.abs(diffPercent) > 1 ? (isOverweight ? 'text-red-500 font-semibold' : 'text-blue-500 font-semibold') : ''}>
                 {diffPercent > 0 ? '+' : ''}{diffPercent.toFixed(1)}%
               </span>
               <span>목표 {targetPercent.toFixed(1)}%</span>
             </div>
 
+            {/* 액션 금액 */}
             {action !== 'hold' && (
-              <div className="bg-gray-50 rounded-xl p-3 text-center">
-                <div className="text-sm font-semibold">
+              <div className={`rounded-xl p-3 text-center ${isUnderweight ? 'bg-blue-50' : 'bg-red-50'}`}>
+                <div className={`text-sm font-semibold ${isUnderweight ? 'text-blue-700' : 'text-red-600'}`}>
                   {isUnderweight ? '▲ 매수' : '▼ 매도'} ₩{formatKRW(actionAmount)}
-                </div>
-                <div className="text-xs text-gray-400 mt-0.5">
-                  ≈ {formatShares(actionShares, asset)} (현재가 ₩{formatKRW(asset.currentPrice)})
                 </div>
               </div>
             )}
+
+            {/* 카테고리 내 개별 자산 목록 */}
+            <div className="border-t border-gray-100 pt-2 space-y-1.5">
+              {catAssets.map((a) => {
+                const value = a.shares * a.currentPrice;
+                const pct = totalValue > 0 ? (value / totalValue) * 100 : 0;
+                return (
+                  <div key={a.id} className="flex items-center justify-between text-xs">
+                    <div className="flex items-center gap-1.5">
+                      <span className="font-medium text-gray-700">{a.ticker}</span>
+                      <span className="text-gray-400">{a.name}</span>
+                    </div>
+                    <div className="text-right">
+                      <span className="font-medium text-gray-700">₩{formatKRW(value)}</span>
+                      <span className="text-gray-400 ml-1.5">
+                        {formatShares(a.shares, a)} · {pct.toFixed(1)}%
+                      </span>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
           </div>
         );
       })}

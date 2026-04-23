@@ -1,4 +1,4 @@
-import { Asset, Category, RebalanceAction } from '../types';
+import { Asset, Category, RebalanceAction, CategoryRebalanceAction } from '../types';
 
 /** 업비트 암호화폐만 소수점 수량 허용, 나머지(주식/ETF/금)는 정수 절사 */
 export function isFractionalAsset(asset: Asset): boolean {
@@ -74,6 +74,38 @@ export function calculateRebalance(
   }
 
   return actions.sort((a, b) => Math.abs(b.diffPercent) - Math.abs(a.diffPercent));
+}
+
+/** 카테고리 단위 리밸런싱: 개별 자산 균등분배 없이 카테고리 전체 비중만 비교 */
+export function calculateCategoryRebalance(
+  assets: Asset[],
+  categories: Category[],
+): CategoryRebalanceAction[] {
+  const totalValue = assets.reduce((s, a) => s + a.shares * a.currentPrice, 0);
+  if (totalValue === 0) return [];
+
+  return categories
+    .map((cat) => {
+      const catAssets = assets.filter((a) => a.categoryId === cat.id);
+      if (catAssets.length === 0) return null;
+      const currentValue = catAssets.reduce((s, a) => s + a.shares * a.currentPrice, 0);
+      const currentPercent = (currentValue / totalValue) * 100;
+      const diffPercent = currentPercent - cat.targetPercent;
+      const action: 'buy' | 'sell' | 'hold' =
+        Math.abs(diffPercent) > 1 ? (diffPercent < 0 ? 'buy' : 'sell') : 'hold';
+      return {
+        category: cat,
+        assets: catAssets,
+        currentValue,
+        currentPercent,
+        targetPercent: cat.targetPercent,
+        diffPercent,
+        action,
+        actionAmount: Math.abs(diffPercent / 100) * totalValue,
+      };
+    })
+    .filter((r): r is CategoryRebalanceAction => r !== null)
+    .sort((a, b) => Math.abs(b.diffPercent) - Math.abs(a.diffPercent));
 }
 
 export function formatKRW(value: number): string {

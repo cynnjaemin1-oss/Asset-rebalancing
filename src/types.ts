@@ -35,3 +35,14 @@ export interface RebalanceAction {
   actionAmount: number;
   actionShares: number;
 }
+
+export interface CategoryRebalanceAction {
+  category: Category;
+  assets: Asset[];
+  currentValue: number;
+  currentPercent: number;
+  targetPercent: number;
+  diffPercent: number; // currentPercent - targetPercent (음수 = 부족)
+  action: 'buy' | 'sell' | 'hold';
+  actionAmount: number;
+}
