@@ -46,46 +46,54 @@ export default function InvestPlan({ assets, categories }: Props) {
       catAssets[a.categoryId].push(a);
     }
 
-    // 카테고리별: 균등 분배 기준 gap 계산 → investCap 적용 → 초과분 재배분
+    // 카테고리 단위 gap → investCap(매입원가 기준) 적용 → 초과분은 uncapped 자산으로
     const effectiveGaps: Map<string, number> = new Map();
-    const cappedAssets: Set<string> = new Set();
+    const cappedAssets: Set<string> = new Set(); // 한도 소진/제한된 자산
 
     for (const cat of categories) {
       const group = catAssets[cat.id] ?? [];
       if (group.length === 0) continue;
-      const catTarget = newTotal * (cat.targetPercent / 100);
-      const perAsset = catTarget / group.length;
 
-      // 1단계: 균등 분배 기준 raw gap 계산
-      let freed = 0;
-      const uncapped: Asset[] = [];
+      // 카테고리 전체 현재가 vs 목표금액 → 카테고리 단위 gap
+      const catCurrentValue = group.reduce((s, a) => s + a.shares * a.currentPrice, 0);
+      const catTarget = newTotal * (cat.targetPercent / 100);
+      let catGap = Math.max(0, catTarget - catCurrentValue);
+
+      // 자산별 investCap 처리: 매입원가(averagePrice×shares) 기준으로 잔여한도 계산
+      const cappedWithRemaining: { a: Asset; remaining: number }[] = [];
+      const uncappedAssets: Asset[] = [];
+
       for (const a of group) {
-        const current = a.shares * a.currentPrice;
-        const rawGap = Math.max(0, perAsset - current);
-        if (a.investCap != null && rawGap > a.investCap) {
-          effectiveGaps.set(a.id, a.investCap);
-          freed += rawGap - a.investCap;
-          cappedAssets.add(a.id);
+        if (a.investCap != null) {
+          const costBasis = a.averagePrice * a.shares;
+          const remaining = Math.max(0, a.investCap - costBasis);
+          if (remaining <= 0) {
+            // 한도 완전 소진 → 매수 불가
+            effectiveGaps.set(a.id, 0);
+            cappedAssets.add(a.id);
+          } else {
+            cappedWithRemaining.push({ a, remaining });
+          }
         } else {
-          effectiveGaps.set(a.id, rawGap);
-          uncapped.push(a);
+          uncappedAssets.push(a);
         }
       }
 
-      // 2단계: 초과분을 같은 카테고리 uncapped 자산에 gap 비례로 재배분
-      if (freed > 0 && uncapped.length > 0) {
-        const uncappedGapTotal = uncapped.reduce((s, a) => s + (effectiveGaps.get(a.id) ?? 0), 0);
-        if (uncappedGapTotal > 0) {
-          for (const a of uncapped) {
-            const share = (effectiveGaps.get(a.id) ?? 0) / uncappedGapTotal;
-            effectiveGaps.set(a.id, (effectiveGaps.get(a.id) ?? 0) + freed * share);
-          }
-        } else {
-          // uncapped 자산들도 gap 0 → 균등 분배
-          const perU = freed / uncapped.length;
-          for (const a of uncapped) {
-            effectiveGaps.set(a.id, (effectiveGaps.get(a.id) ?? 0) + perU);
-          }
+      // 한도 잔여 자산: catGap 내에서 잔여한도까지 순서대로 채움
+      let remainingCatGap = catGap;
+      for (const { a, remaining } of cappedWithRemaining) {
+        const isCappedByLimit = remaining <= remainingCatGap;
+        const allocated = Math.min(remaining, remainingCatGap);
+        effectiveGaps.set(a.id, allocated);
+        remainingCatGap -= allocated;
+        if (isCappedByLimit) cappedAssets.add(a.id); // investCap이 binding
+      }
+
+      // 나머지 catGap → uncapped 자산에 균등 분배
+      if (uncappedAssets.length > 0 && remainingCatGap > 0) {
+        const perUncapped = remainingCatGap / uncappedAssets.length;
+        for (const a of uncappedAssets) {
+          effectiveGaps.set(a.id, perUncapped);
         }
       }
     }
@@ -105,8 +113,8 @@ export default function InvestPlan({ assets, categories }: Props) {
         ? Math.floor(rawBuy)
         : Math.floor(buyShares * a.currentPrice);
       const newValue = currentValue + buyAmount;
-      const group = catAssets[a.categoryId] ?? [];
-      const targetPct = cat ? cat.targetPercent / group.length : 0;
+      // 목표비중은 카테고리 단위 (개별 자산 균등분배 없음)
+      const targetPct = cat ? cat.targetPercent : 0;
 
       return {
         asset: a,
