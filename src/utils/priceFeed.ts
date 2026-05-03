@@ -1,31 +1,45 @@
 import { Asset, PriceSource } from '../types';
 
-// ── 멀티-프록시 — Promise.any() 동시 경쟁 ────────────────────────────────────
+// ── 멀티-프록시 — Promise.any() 동시 경쟁, 실패 시 1회 재시도 ────────────────
 async function fetchWithProxy(url: string): Promise<unknown> {
   const enc = encodeURIComponent(url);
 
-  const attempts: Promise<unknown>[] = [
+  const makeAttempts = (): Promise<unknown>[] => [
     // 1) corsproxy.io
-    fetch(`https://corsproxy.io/?${url}`, { signal: AbortSignal.timeout(10_000) })
+    fetch(`https://corsproxy.io/?${url}`, { signal: AbortSignal.timeout(12_000) })
       .then((r) => { if (!r.ok) throw new Error(`corsproxy ${r.status}`); return r.json(); }),
 
     // 2) allorigins
-    fetch(`https://api.allorigins.win/get?url=${enc}`, { signal: AbortSignal.timeout(12_000) })
+    fetch(`https://api.allorigins.win/get?url=${enc}`, { signal: AbortSignal.timeout(14_000) })
       .then((r) => r.json())
       .then((w) => { if (!w?.contents) throw new Error('allorigins empty'); return JSON.parse(w.contents); }),
 
-    // 3) codetabs — Naver 허용 여부 양호
-    fetch(`https://api.codetabs.com/v1/proxy?quest=${enc}`, { signal: AbortSignal.timeout(12_000) })
+    // 3) codetabs
+    fetch(`https://api.codetabs.com/v1/proxy?quest=${enc}`, { signal: AbortSignal.timeout(14_000) })
       .then((r) => { if (!r.ok) throw new Error(`codetabs ${r.status}`); return r.json(); }),
+
+    // 4) thingproxy
+    fetch(`https://thingproxy.freeboard.io/fetch/${url}`, { signal: AbortSignal.timeout(14_000) })
+      .then((r) => { if (!r.ok) throw new Error(`thingproxy ${r.status}`); return r.json(); }),
   ];
 
+  const tryOnce = async (): Promise<unknown> => {
+    try {
+      return await Promise.any(makeAttempts());
+    } catch (agg) {
+      const msgs = (agg as AggregateError)?.errors
+        ?.map((e: unknown) => (e instanceof Error ? e.message : 'err'))
+        .join(' / ') ?? '모든 프록시 실패';
+      throw new Error(`프록시 연결 실패 (${msgs})`);
+    }
+  };
+
   try {
-    return await Promise.any(attempts);
-  } catch (agg) {
-    const msgs = (agg as AggregateError)?.errors
-      ?.map((e: unknown) => (e instanceof Error ? e.message : 'err'))
-      .join(' / ') ?? '모든 프록시 실패';
-    throw new Error(`프록시 연결 실패 (${msgs})`);
+    return await tryOnce();
+  } catch {
+    // 1.5초 후 1회 재시도
+    await new Promise((r) => setTimeout(r, 1500));
+    return await tryOnce();
   }
 }
 
@@ -43,19 +57,15 @@ async function fetchNaverPrice(code: string): Promise<number> {
 }
 
 // ── KRX 금현물 (원/g) ─────────────────────────────────────────────────────────
-// Binance PAXG-USDT: PAX Gold = 금 1트로이온스 기반 토큰, CORS 허용, 인증 불필요
-// 원/g = PAXG_USD ÷ 31.1035 × USDT/KRW
 async function fetchKrxGoldPrice(): Promise<number> {
   const [goldUsd, usdKrw] = await Promise.all([fetchGoldUsdPerOz(), fetchUsdKrwRate()]);
   return Math.round((goldUsd / 31.1035) * usdKrw);
 }
 
 async function fetchGoldUsdPerOz(): Promise<number> {
-  // Binance Public API — CORS 허용, 인증 불필요
-  // PAXG(PAX Gold) = 금 실물 1트로이온스 기반, 스팟 금 시세와 0.1% 이내 차이
   const res = await fetch(
     'https://api.binance.com/api/v3/ticker/price?symbol=PAXGUSDT',
-    { signal: AbortSignal.timeout(8_000) },
+    { signal: AbortSignal.timeout(10_000) },
   );
   if (!res.ok) throw new Error(`Binance ${res.status}`);
   const data = await res.json();
@@ -64,38 +74,57 @@ async function fetchGoldUsdPerOz(): Promise<number> {
   return price;
 }
 
-// ── Upbit (암호화폐) ──────────────────────────────────────────────────────────
-async function fetchUpbitPrice(coin: string): Promise<number> {
-  const market = `KRW-${coin.toUpperCase()}`;
+// ── Upbit 배치 조회 (모든 코인 + USDT를 단일 API 호출) ───────────────────────
+async function fetchUpbitBatch(coins: string[]): Promise<Record<string, number>> {
+  const markets = [...new Set(coins.map((c) => `KRW-${c.toUpperCase()}`))]
+    .join(',');
   const res = await fetch(
-    `https://api.upbit.com/v1/ticker?markets=${market}`,
-    { signal: AbortSignal.timeout(8_000) },
+    `https://api.upbit.com/v1/ticker?markets=${encodeURIComponent(markets)}`,
+    { signal: AbortSignal.timeout(10_000) },
   );
   if (!res.ok) throw new Error(`Upbit 오류: ${res.status}`);
-  const data = await res.json();
-  const price = data?.[0]?.trade_price;
-  if (!price) throw new Error('가격 데이터 없음');
-  return price;
+  const data = (await res.json()) as { market: string; trade_price: number }[];
+  return Object.fromEntries(
+    data.map((d) => [d.market.replace('KRW-', ''), d.trade_price]),
+  );
 }
 
-// ── USD/KRW (Upbit KRW-USDT) ─────────────────────────────────────────────────
+// ── USD/KRW 캐시 ─────────────────────────────────────────────────────────────
 let cachedUsdKrw: { rate: number; ts: number } | null = null;
+
 async function fetchUsdKrwRate(): Promise<number> {
   if (cachedUsdKrw && Date.now() - cachedUsdKrw.ts < 60_000) return cachedUsdKrw.rate;
-  const rate = await fetchUpbitPrice('USDT');
+  const prices = await fetchUpbitBatch(['USDT']);
+  const rate = prices['USDT'];
+  if (!rate) throw new Error('USDT 가격 없음');
   cachedUsdKrw = { rate, ts: Date.now() };
   return rate;
 }
 
-// ── Yahoo Finance (미국 주식) — via proxy ─────────────────────────────────────
+// ── Yahoo Finance (미국 주식) — v8 우선, v7 fallback ─────────────────────────
 async function fetchYahooUsdPrice(symbol: string): Promise<number> {
+  const sym = encodeURIComponent(symbol);
+
+  // v8 chart API 시도
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const data = (await fetchWithProxy(
+      `https://query1.finance.yahoo.com/v8/finance/chart/${sym}?interval=1d&range=1d`,
+    )) as any;
+    const price = data?.chart?.result?.[0]?.meta?.regularMarketPrice;
+    if (price) return price;
+  } catch {
+    // v8 실패 시 v7 quote API fallback
+  }
+
+  // v7 quote API fallback
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const data = (await fetchWithProxy(
-    `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?interval=1d&range=1d`,
+  const data2 = (await fetchWithProxy(
+    `https://query2.finance.yahoo.com/v7/finance/quote?symbols=${sym}`,
   )) as any;
-  const price = data?.chart?.result?.[0]?.meta?.regularMarketPrice;
-  if (!price) throw new Error('가격 없음 (심볼 확인)');
-  return price;
+  const price2 = data2?.quoteResponse?.result?.[0]?.regularMarketPrice;
+  if (!price2) throw new Error('가격 없음 (심볼 확인)');
+  return price2;
 }
 
 // ── Public ────────────────────────────────────────────────────────────────────
@@ -126,8 +155,12 @@ export async function fetchPrice(
       return { price: Math.round(priceUsd * usdKrwRate), priceUsd, usdKrwRate };
     }
 
-    case 'upbit':
-      return { price: await fetchUpbitPrice(source.symbol) };
+    case 'upbit': {
+      const prices = await fetchUpbitBatch([source.symbol]);
+      const price = prices[source.symbol.toUpperCase()];
+      if (!price) throw new Error('가격 데이터 없음');
+      return { price };
+    }
 
     default:
       throw new Error('수동 입력');
@@ -139,10 +172,42 @@ export async function fetchAllPrices(
   apiKey?: string,
 ): Promise<PriceFetchResult[]> {
   const linked = assets.filter((a) => a.priceSource && a.priceSource.type !== 'manual');
+
+  // Upbit 자산(암호화폐)을 단일 배치 호출로 통합 → rate limit 방지
+  const upbitAssets = linked.filter((a) => a.priceSource?.type === 'upbit');
+  const needsUsdRate = linked.some(
+    (a) => a.priceSource?.type === 'yahoo_us' || a.priceSource?.type === 'krx_gold',
+  );
+  const upbitCoins = [
+    ...upbitAssets.map((a) => a.priceSource!.symbol.toUpperCase()),
+    ...(needsUsdRate ? ['USDT'] : []),
+  ];
+
+  let upbitMap: Record<string, number> = {};
+  if (upbitCoins.length > 0) {
+    try {
+      upbitMap = await fetchUpbitBatch(upbitCoins);
+      if (upbitMap['USDT']) {
+        cachedUsdKrw = { rate: upbitMap['USDT'], ts: Date.now() };
+      }
+    } catch {
+      // 실패 시 개별 처리로 폴백
+    }
+  }
+
   return Promise.all(
     linked.map(async (asset) => {
       try {
-        const result = await fetchPrice(asset.priceSource!, apiKey);
+        const src = asset.priceSource!;
+
+        // 이미 배치 조회한 Upbit 자산은 캐시에서 바로 반환
+        if (src.type === 'upbit') {
+          const price = upbitMap[src.symbol.toUpperCase()];
+          if (price) return { assetId: asset.id, price };
+          // 배치 실패 시 단독 재시도
+        }
+
+        const result = await fetchPrice(src, apiKey);
         return { assetId: asset.id, ...result };
       } catch (e) {
         return { assetId: asset.id, error: e instanceof Error ? e.message : '오류' };
