@@ -144,14 +144,18 @@ export default function AssetList({ assets, categories, onSave, onDelete, onPric
                   </div>
                 </div>
 
-                <div className="mt-3 grid grid-cols-3 gap-2 text-center">
+                <div className="mt-3 grid grid-cols-4 gap-2 text-center">
                   <div>
                     <div className="text-xs text-gray-400">평가금액</div>
                     <div className="text-sm font-semibold">₩{formatKRW(value)}</div>
                   </div>
                   <div>
-                    <div className="text-xs text-gray-400">현재가 (원)</div>
+                    <div className="text-xs text-gray-400">현재가</div>
                     <div className="text-sm font-semibold">₩{formatKRW(asset.currentPrice)}</div>
+                  </div>
+                  <div>
+                    <div className="text-xs text-gray-400">평균단가</div>
+                    <div className="text-sm font-semibold">₩{formatKRW(asset.averagePrice)}</div>
                   </div>
                   <div>
                     <div className="text-xs text-gray-400">손익</div>
