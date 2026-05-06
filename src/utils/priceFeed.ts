@@ -1,45 +1,32 @@
 import { Asset, PriceSource } from '../types';
 
-// ── 멀티-프록시 — Promise.any() 동시 경쟁, 실패 시 1회 재시도 ────────────────
+// ── 멀티-프록시 — 4개 프록시 동시 경쟁, 최대 12초 ────────────────────────────
+// retry 없음: 실패하면 즉시 에러 반환 (무한로딩 방지)
 async function fetchWithProxy(url: string): Promise<unknown> {
   const enc = encodeURIComponent(url);
 
-  const makeAttempts = (): Promise<unknown>[] => [
-    // 1) corsproxy.io
+  const attempts: Promise<unknown>[] = [
     fetch(`https://corsproxy.io/?${url}`, { signal: AbortSignal.timeout(12_000) })
       .then((r) => { if (!r.ok) throw new Error(`corsproxy ${r.status}`); return r.json(); }),
 
-    // 2) allorigins
-    fetch(`https://api.allorigins.win/get?url=${enc}`, { signal: AbortSignal.timeout(14_000) })
+    fetch(`https://api.allorigins.win/get?url=${enc}`, { signal: AbortSignal.timeout(12_000) })
       .then((r) => r.json())
       .then((w) => { if (!w?.contents) throw new Error('allorigins empty'); return JSON.parse(w.contents); }),
 
-    // 3) codetabs
-    fetch(`https://api.codetabs.com/v1/proxy?quest=${enc}`, { signal: AbortSignal.timeout(14_000) })
+    fetch(`https://api.codetabs.com/v1/proxy?quest=${enc}`, { signal: AbortSignal.timeout(12_000) })
       .then((r) => { if (!r.ok) throw new Error(`codetabs ${r.status}`); return r.json(); }),
 
-    // 4) thingproxy
-    fetch(`https://thingproxy.freeboard.io/fetch/${url}`, { signal: AbortSignal.timeout(14_000) })
+    fetch(`https://thingproxy.freeboard.io/fetch/${url}`, { signal: AbortSignal.timeout(12_000) })
       .then((r) => { if (!r.ok) throw new Error(`thingproxy ${r.status}`); return r.json(); }),
   ];
 
-  const tryOnce = async (): Promise<unknown> => {
-    try {
-      return await Promise.any(makeAttempts());
-    } catch (agg) {
-      const msgs = (agg as AggregateError)?.errors
-        ?.map((e: unknown) => (e instanceof Error ? e.message : 'err'))
-        .join(' / ') ?? '모든 프록시 실패';
-      throw new Error(`프록시 연결 실패 (${msgs})`);
-    }
-  };
-
   try {
-    return await tryOnce();
-  } catch {
-    // 1.5초 후 1회 재시도
-    await new Promise((r) => setTimeout(r, 1500));
-    return await tryOnce();
+    return await Promise.any(attempts);
+  } catch (agg) {
+    const msgs = (agg as AggregateError)?.errors
+      ?.map((e: unknown) => (e instanceof Error ? e.message : 'err'))
+      .join(' / ') ?? '모든 프록시 실패';
+    throw new Error(`프록시 연결 실패 (${msgs})`);
   }
 }
 
@@ -130,30 +117,33 @@ async function fetchUsdKrwRate(): Promise<number> {
   return rate;
 }
 
-// ── Yahoo Finance (미국 주식) — v8 우선, v7 fallback ─────────────────────────
+// ── Yahoo Finance (미국 주식) — v8과 v7을 동시에 시도, 먼저 성공한 값 사용 ───
 async function fetchYahooUsdPrice(symbol: string): Promise<number> {
   const sym = encodeURIComponent(symbol);
 
-  // v8 chart API 시도
-  try {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const data = (await fetchWithProxy(
-      `https://query1.finance.yahoo.com/v8/finance/chart/${sym}?interval=1d&range=1d`,
-    )) as any;
-    const price = data?.chart?.result?.[0]?.meta?.regularMarketPrice;
-    if (price) return price;
-  } catch {
-    // v8 실패 시 v7 quote API fallback
-  }
-
-  // v7 quote API fallback
+  // v8(chart)과 v7(quote)를 병렬로 경쟁 — 순차 실행 대신 동시 시도로 대기 시간 절반
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const data2 = (await fetchWithProxy(
-    `https://query2.finance.yahoo.com/v7/finance/quote?symbols=${sym}`,
-  )) as any;
-  const price2 = data2?.quoteResponse?.result?.[0]?.regularMarketPrice;
-  if (!price2) throw new Error('가격 없음 (심볼 확인)');
-  return price2;
+  const price = await Promise.any([
+    fetchWithProxy(
+      `https://query1.finance.yahoo.com/v8/finance/chart/${sym}?interval=1d&range=1d`,
+    ).then((d) => {
+      const p = (d as any)?.chart?.result?.[0]?.meta?.regularMarketPrice as number;
+      if (!p) throw new Error('no price v8');
+      return p;
+    }),
+
+    fetchWithProxy(
+      `https://query2.finance.yahoo.com/v7/finance/quote?symbols=${sym}`,
+    ).then((d) => {
+      const p = (d as any)?.quoteResponse?.result?.[0]?.regularMarketPrice as number;
+      if (!p) throw new Error('no price v7');
+      return p;
+    }),
+  ]).catch(() => {
+    throw new Error('가격 없음 (심볼 확인)');
+  });
+
+  return price;
 }
 
 // ── Public ────────────────────────────────────────────────────────────────────
@@ -224,6 +214,10 @@ export async function fetchAllPrices(
     }
   }
 
+  // 자산당 최대 15초 하드 타임아웃 — 프록시가 무한 대기해도 UI 안 걸림
+  const withTimeout = <T>(p: Promise<T>, ms: number): Promise<T> =>
+    Promise.race([p, new Promise<T>((_, reject) => setTimeout(() => reject(new Error('조회 시간 초과')), ms))]);
+
   return Promise.all(
     linked.map(async (asset) => {
       try {
@@ -233,10 +227,9 @@ export async function fetchAllPrices(
         if (src.type === 'upbit') {
           const price = upbitMap[src.symbol.toUpperCase()];
           if (price) return { assetId: asset.id, price };
-          // 배치 실패 시 단독 재시도
         }
 
-        const result = await fetchPrice(src, apiKey);
+        const result = await withTimeout(fetchPrice(src, apiKey), 15_000);
         return { assetId: asset.id, ...result };
       } catch (e) {
         return { assetId: asset.id, error: e instanceof Error ? e.message : '오류' };
