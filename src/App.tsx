@@ -38,6 +38,11 @@ export default function App() {
 
   useEffect(() => {
     localStorage.setItem('assets', JSON.stringify(assets));
+
+    // 갭트래커 연동: 총 평가금액을 억 단위로 저장
+    const totalKRW = assets.reduce((sum, a) => sum + a.shares * a.currentPrice, 0);
+    const totalEok = Math.round((totalKRW / 100000000) * 10) / 10;
+    localStorage.setItem('apt_financial_assets', String(totalEok));
   }, [assets]);
 
   useEffect(() => {
