@@ -182,21 +182,15 @@ export async function fetchAllPrices(
 
   // Upbit 자산(암호화폐)을 단일 배치 호출로 통합 → rate limit 방지
   const upbitAssets = linked.filter((a) => a.priceSource?.type === 'upbit');
-  const needsUsdRate = linked.some(
-    (a) => a.priceSource?.type === 'yahoo_us' || a.priceSource?.type === 'krx_gold',
-  );
-  const upbitCoins = [
-    ...upbitAssets.map((a) => a.priceSource!.symbol.toUpperCase()),
-    ...(needsUsdRate ? ['USDT'] : []),
-  ];
+  // 암호화폐만 배치로 묶음. USDT는 포함하지 않음 —
+  // USDT로 cachedUsdKrw를 선점하면 fetchUsdKrwRate()가 캐시 히트 후
+  // Yahoo Finance USDKRW=X를 건너뛰어 stale한 Upbit USDT 환율이 고착됨
+  const upbitCoins = upbitAssets.map((a) => a.priceSource!.symbol.toUpperCase());
 
   let upbitMap: Record<string, number> = {};
   if (upbitCoins.length > 0) {
     try {
       upbitMap = await fetchUpbitBatch(upbitCoins);
-      if (upbitMap['USDT']) {
-        cachedUsdKrw = { rate: upbitMap['USDT'], ts: Date.now() };
-      }
     } catch {
       // 실패 시 개별 처리로 폴백
     }
