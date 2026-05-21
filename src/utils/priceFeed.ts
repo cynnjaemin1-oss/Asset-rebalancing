@@ -77,41 +77,29 @@ async function fetchUpbitBatch(coins: string[]): Promise<Record<string, number>>
 }
 
 // ── USD/KRW 실시간 환율 ───────────────────────────────────────────────────────
-// 소스 우선순위: Yahoo Finance USDKRW=X (실시간) → Frankfurter (ECB 기준) → Upbit USDT (fallback)
+// Frankfurter(ECB 일별 고시)는 빠르지만 하루 1회 업데이트 → 제거
+// Yahoo Finance USDKRW=X 우선, 실패 시 Upbit USDT fallback
 let cachedUsdKrw: { rate: number; ts: number } | null = null;
 
 async function fetchUsdKrwRate(): Promise<number> {
   if (cachedUsdKrw && Date.now() - cachedUsdKrw.ts < 30_000) return cachedUsdKrw.rate;
 
-  const rate = await Promise.any([
-    // 1) Yahoo Finance USDKRW=X — 실시간 인터뱅크 환율 (기존 프록시 사용)
-    fetchWithProxy(
+  let rate: number;
+  try {
+    // Yahoo Finance USDKRW=X — 실시간 인터뱅크 환율 (proxy 경유)
+    const d = await fetchWithProxy(
       'https://query1.finance.yahoo.com/v8/finance/chart/USDKRW=X?interval=1d&range=1d',
-    ).then((d) => {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const r = (d as any)?.chart?.result?.[0]?.meta?.regularMarketPrice as number;
-      if (!r || r < 900 || r > 2500) throw new Error('invalid');
-      return r;
-    }),
-
-    // 2) Frankfurter (ECB 기준, CORS native, 프록시 불필요)
-    fetch('https://api.frankfurter.app/latest?from=USD&to=KRW', {
-      signal: AbortSignal.timeout(8_000),
-    })
-      .then((r) => r.json())
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      .then((d) => {
-        const r = (d as any)?.rates?.KRW as number;
-        if (!r) throw new Error('no rate');
-        return r;
-      }),
-
-    // 3) Upbit USDT — 항상 응답 가능하나 프리미엄 포함 (최후 fallback)
-    fetchUpbitBatch(['USDT']).then((m) => {
-      if (!m['USDT']) throw new Error('no USDT');
-      return m['USDT'];
-    }),
-  ]);
+    );
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const r = (d as any)?.chart?.result?.[0]?.meta?.regularMarketPrice as number;
+    if (!r || r < 900 || r > 2500) throw new Error('invalid rate');
+    rate = r;
+  } catch {
+    // fallback: Upbit USDT (CORS native, 항상 응답 가능)
+    const prices = await fetchUpbitBatch(['USDT']);
+    if (!prices['USDT']) throw new Error('환율 조회 실패');
+    rate = prices['USDT'];
+  }
 
   cachedUsdKrw = { rate, ts: Date.now() };
   return rate;
