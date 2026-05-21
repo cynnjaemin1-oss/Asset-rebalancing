@@ -105,33 +105,44 @@ async function fetchUsdKrwRate(): Promise<number> {
   return rate;
 }
 
-// ── Yahoo Finance (미국 주식) — v8과 v7을 동시에 시도, 먼저 성공한 값 사용 ───
-async function fetchYahooUsdPrice(symbol: string): Promise<number> {
+// ── Yahoo Finance (미국 주식 + USD/KRW 동시 조회) ────────────────────────────
+// 주식 심볼과 USDKRW=X를 단일 v7 요청으로 묶어 환율 freshness 보장
+async function fetchYahooUsdAndFx(symbol: string): Promise<{ priceUsd: number; usdKrwRate: number }> {
   const sym = encodeURIComponent(symbol);
+  const fxSym = encodeURIComponent('USDKRW=X');
 
-  // v8(chart)과 v7(quote)를 병렬로 경쟁 — 순차 실행 대신 동시 시도로 대기 시간 절반
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const price = await Promise.any([
-    fetchWithProxy(
-      `https://query1.finance.yahoo.com/v8/finance/chart/${sym}?interval=1d&range=1d`,
-    ).then((d) => {
-      const p = (d as any)?.chart?.result?.[0]?.meta?.regularMarketPrice as number;
-      if (!p) throw new Error('no price v8');
-      return p;
-    }),
-
-    fetchWithProxy(
-      `https://query2.finance.yahoo.com/v7/finance/quote?symbols=${sym}`,
-    ).then((d) => {
-      const p = (d as any)?.quoteResponse?.result?.[0]?.regularMarketPrice as number;
-      if (!p) throw new Error('no price v7');
-      return p;
-    }),
-  ]).catch(() => {
-    throw new Error('가격 없음 (심볼 확인)');
+  const tryV7Batch = fetchWithProxy(
+    `https://query2.finance.yahoo.com/v7/finance/quote?symbols=${sym},${fxSym}`,
+  ).then((d) => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const results: any[] = (d as any)?.quoteResponse?.result ?? [];
+    const stockResult = results.find((r: any) => r.symbol === symbol);
+    const fxResult = results.find((r: any) => r.symbol === 'USDKRW=X');
+    const priceUsd = stockResult?.regularMarketPrice as number;
+    const usdKrwRate = fxResult?.regularMarketPrice as number;
+    if (!priceUsd) throw new Error('no stock price v7');
+    if (!usdKrwRate || usdKrwRate < 900 || usdKrwRate > 2500) throw new Error('no fx rate v7');
+    return { priceUsd, usdKrwRate };
   });
 
-  return price;
+  // v8 chart as fallback for stock price only (reuse cached fx rate)
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const tryV8Fallback = fetchWithProxy(
+    `https://query1.finance.yahoo.com/v8/finance/chart/${sym}?interval=1d&range=1d`,
+  ).then(async (d) => {
+    const p = (d as any)?.chart?.result?.[0]?.meta?.regularMarketPrice as number;
+    if (!p) throw new Error('no price v8');
+    // v8 only gives stock price; fetch fx separately (will use cache if fresh)
+    const usdKrwRate = await fetchUsdKrwRate();
+    return { priceUsd: p, usdKrwRate };
+  });
+
+  try {
+    return await Promise.any([tryV7Batch, tryV8Fallback]);
+  } catch {
+    throw new Error('가격 없음 (심볼 확인)');
+  }
 }
 
 // ── Public ────────────────────────────────────────────────────────────────────
@@ -155,10 +166,9 @@ export async function fetchPrice(
       return { price: await fetchKrxGoldPrice() };
 
     case 'yahoo_us': {
-      const [priceUsd, usdKrwRate] = await Promise.all([
-        fetchYahooUsdPrice(source.symbol),
-        fetchUsdKrwRate(),
-      ]);
+      const { priceUsd, usdKrwRate } = await fetchYahooUsdAndFx(source.symbol);
+      // update cache so subsequent assets reuse this fresh rate
+      cachedUsdKrw = { rate: usdKrwRate, ts: Date.now() };
       return { price: Math.round(priceUsd * usdKrwRate), priceUsd, usdKrwRate };
     }
 
