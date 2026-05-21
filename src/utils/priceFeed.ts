@@ -77,8 +77,8 @@ async function fetchUpbitBatch(coins: string[]): Promise<Record<string, number>>
 }
 
 // ── USD/KRW 실시간 환율 ───────────────────────────────────────────────────────
-// Frankfurter(ECB 일별 고시)는 빠르지만 하루 1회 업데이트 → 제거
-// Yahoo Finance USDKRW=X 우선, 실패 시 Upbit USDT fallback
+// Upbit USDT/KRW 우선 (CORS 직접 호출 → 프록시 캐시 없음, 실시간)
+// 실패 시 Yahoo Finance USDKRW=X fallback (proxy 경유, 캐시 있을 수 있음)
 let cachedUsdKrw: { rate: number; ts: number } | null = null;
 
 async function fetchUsdKrwRate(): Promise<number> {
@@ -86,63 +86,63 @@ async function fetchUsdKrwRate(): Promise<number> {
 
   let rate: number;
   try {
-    // Yahoo Finance USDKRW=X — 실시간 인터뱅크 환율 (proxy 경유)
+    // Primary: Upbit USDT — 프록시 불필요, 매 초 업데이트, 실환율과 오차 ±1~2원
+    const prices = await fetchUpbitBatch(['USDT']);
+    const r = prices['USDT'];
+    if (!r || r < 900 || r > 2500) throw new Error('invalid upbit usdt rate');
+    rate = r;
+  } catch {
+    // Fallback: Yahoo Finance USDKRW=X (proxy 경유 → 캐시 지연 가능성 있음)
     const d = await fetchWithProxy(
       'https://query1.finance.yahoo.com/v8/finance/chart/USDKRW=X?interval=1d&range=1d',
     );
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const r = (d as any)?.chart?.result?.[0]?.meta?.regularMarketPrice as number;
-    if (!r || r < 900 || r > 2500) throw new Error('invalid rate');
+    if (!r || r < 900 || r > 2500) throw new Error('환율 조회 실패');
     rate = r;
-  } catch {
-    // fallback: Upbit USDT (CORS native, 항상 응답 가능)
-    const prices = await fetchUpbitBatch(['USDT']);
-    if (!prices['USDT']) throw new Error('환율 조회 실패');
-    rate = prices['USDT'];
   }
 
   cachedUsdKrw = { rate, ts: Date.now() };
   return rate;
 }
 
-// ── Yahoo Finance (미국 주식 + USD/KRW 동시 조회) ────────────────────────────
-// 주식 심볼과 USDKRW=X를 단일 v7 요청으로 묶어 환율 freshness 보장
+// ── Yahoo Finance (미국 주식) + Upbit USDT (환율) 병렬 조회 ──────────────────
+// 주식 가격: Yahoo v7/v8 경쟁 (proxy)
+// 환율: Upbit USDT 직접 호출 (실시간, proxy 캐시 없음)
 async function fetchYahooUsdAndFx(symbol: string): Promise<{ priceUsd: number; usdKrwRate: number }> {
   const sym = encodeURIComponent(symbol);
-  const fxSym = encodeURIComponent('USDKRW=X');
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const tryV7Batch = fetchWithProxy(
-    `https://query2.finance.yahoo.com/v7/finance/quote?symbols=${sym},${fxSym}`,
-  ).then((d) => {
+  // 주식 가격 — v7(quote)와 v8(chart) 병렬 경쟁
+  const stockPromise = Promise.any([
+    fetchWithProxy(
+      `https://query2.finance.yahoo.com/v7/finance/quote?symbols=${sym}`,
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const results: any[] = (d as any)?.quoteResponse?.result ?? [];
-    const stockResult = results.find((r: any) => r.symbol === symbol);
-    const fxResult = results.find((r: any) => r.symbol === 'USDKRW=X');
-    const priceUsd = stockResult?.regularMarketPrice as number;
-    const usdKrwRate = fxResult?.regularMarketPrice as number;
-    if (!priceUsd) throw new Error('no stock price v7');
-    if (!usdKrwRate || usdKrwRate < 900 || usdKrwRate > 2500) throw new Error('no fx rate v7');
-    return { priceUsd, usdKrwRate };
-  });
+    ).then((d) => {
+      const p = (d as any)?.quoteResponse?.result?.[0]?.regularMarketPrice as number;
+      if (!p) throw new Error('no price v7');
+      return p;
+    }),
+    fetchWithProxy(
+      `https://query1.finance.yahoo.com/v8/finance/chart/${sym}?interval=1d&range=1d`,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    ).then((d) => {
+      const p = (d as any)?.chart?.result?.[0]?.meta?.regularMarketPrice as number;
+      if (!p) throw new Error('no price v8');
+      return p;
+    }),
+  ]).catch(() => { throw new Error('가격 없음 (심볼 확인)'); });
 
-  // v8 chart as fallback for stock price only (reuse cached fx rate)
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const tryV8Fallback = fetchWithProxy(
-    `https://query1.finance.yahoo.com/v8/finance/chart/${sym}?interval=1d&range=1d`,
-  ).then(async (d) => {
-    const p = (d as any)?.chart?.result?.[0]?.meta?.regularMarketPrice as number;
-    if (!p) throw new Error('no price v8');
-    // v8 only gives stock price; fetch fx separately (will use cache if fresh)
-    const usdKrwRate = await fetchUsdKrwRate();
-    return { priceUsd: p, usdKrwRate };
-  });
+  // 환율 — Upbit USDT (직접 호출, 실시간) → Yahoo fallback
+  const fxPromise = fetchUpbitBatch(['USDT'])
+    .then((p) => {
+      const r = p['USDT'];
+      if (!r || r < 900 || r > 2500) throw new Error('invalid upbit usdt');
+      return r;
+    })
+    .catch(() => fetchUsdKrwRate());
 
-  try {
-    return await Promise.any([tryV7Batch, tryV8Fallback]);
-  } catch {
-    throw new Error('가격 없음 (심볼 확인)');
-  }
+  const [priceUsd, usdKrwRate] = await Promise.all([stockPromise, fxPromise]);
+  return { priceUsd, usdKrwRate };
 }
 
 // ── Public ────────────────────────────────────────────────────────────────────
