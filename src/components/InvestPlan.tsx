@@ -5,6 +5,7 @@ import { formatKRW, formatShares, isFractionalAsset } from '../utils/rebalance';
 interface Props {
   assets: Asset[];
   categories: Category[];
+  bandThreshold: number;
 }
 
 interface PlanRow {
@@ -12,15 +13,58 @@ interface PlanRow {
   category: Category;
   currentValue: number;
   currentPct: number;
-  targetPct: number;    // 자산 단위 목표 비율 (카테고리 내 균등 분배)
-  buyAmount: number;    // 추천 매수 금액
-  buyShares: number;    // 추천 매수 수량
-  newValue: number;     // 매수 후 평가금액
-  newPct: number;       // 매수 후 비율
-  capped: boolean;      // 투자 한도에 의해 금액이 제한됨
+  targetPct: number;
+  catDeviation: number;
+  buyAmount: number;
+  buyShares: number;
+  newValue: number;
+  newPct: number;
+  capped: boolean;
 }
 
-export default function InvestPlan({ assets, categories }: Props) {
+// investCap을 존중하며 budget을 자산 그룹에 분배
+function distributeBudget(
+  group: Asset[],
+  budget: number,
+  allocations: Map<string, number>,
+  capped: Set<string>,
+): void {
+  const cappedWithRemaining: { a: Asset; remaining: number }[] = [];
+  const uncappedAssets: Asset[] = [];
+
+  for (const a of group) {
+    if (a.investCap != null) {
+      const costBasis = a.averagePrice * a.shares;
+      const remaining = Math.max(0, a.investCap - costBasis);
+      if (remaining <= 0) {
+        allocations.set(a.id, 0);
+        capped.add(a.id);
+      } else {
+        cappedWithRemaining.push({ a, remaining });
+      }
+    } else {
+      uncappedAssets.push(a);
+    }
+  }
+
+  let remainingBudget = budget;
+  for (const { a, remaining } of cappedWithRemaining) {
+    const isCappedByLimit = remaining <= remainingBudget;
+    const allocated = Math.min(remaining, remainingBudget);
+    allocations.set(a.id, allocated);
+    remainingBudget -= allocated;
+    if (isCappedByLimit) capped.add(a.id);
+  }
+
+  if (uncappedAssets.length > 0 && remainingBudget > 0) {
+    const perUncapped = remainingBudget / uncappedAssets.length;
+    for (const a of uncappedAssets) {
+      allocations.set(a.id, perUncapped);
+    }
+  }
+}
+
+export default function InvestPlan({ assets, categories, bandThreshold }: Props) {
   const [inputStr, setInputStr] = useState('');
 
   const investAmount = useMemo(() => {
@@ -31,97 +75,100 @@ export default function InvestPlan({ assets, categories }: Props) {
 
   const totalCurrent = useMemo(
     () => assets.reduce((s, a) => s + a.shares * a.currentPrice, 0),
-    [assets]
+    [assets],
   );
+
+  // 카테고리별 편차: currentCatPct - targetPct
+  const catDeviations = useMemo<Map<string, number>>(() => {
+    const map = new Map<string, number>();
+    for (const cat of categories) {
+      const catValue = assets
+        .filter((a) => a.categoryId === cat.id)
+        .reduce((s, a) => s + a.shares * a.currentPrice, 0);
+      const catPct = totalCurrent > 0 ? (catValue / totalCurrent) * 100 : 0;
+      map.set(cat.id, catPct - cat.targetPercent);
+    }
+    return map;
+  }, [assets, categories, totalCurrent]);
+
+  // 포트폴리오가 없거나 모든 카테고리가 밴드 내 → normal, 아니면 corrective
+  const mode = useMemo<'normal' | 'corrective'>(() => {
+    if (totalCurrent === 0) return 'normal';
+    const maxAbs = Math.max(0, ...[...catDeviations.values()].map(Math.abs));
+    return maxAbs >= bandThreshold ? 'corrective' : 'normal';
+  }, [catDeviations, bandThreshold, totalCurrent]);
+
+  // 밴드 이탈 카테고리 목록 (배너용)
+  const outOfBandCats = useMemo(() => {
+    return [...catDeviations.entries()]
+      .filter(([, dev]) => Math.abs(dev) >= bandThreshold)
+      .map(([catId, dev]) => {
+        const cat = categories.find((c) => c.id === catId);
+        const sign = dev > 0 ? '+' : '';
+        return `${cat?.name ?? ''} ${sign}${dev.toFixed(1)}%p`;
+      });
+  }, [catDeviations, bandThreshold, categories]);
 
   const plan = useMemo<PlanRow[]>(() => {
     if (investAmount === 0 || assets.length === 0) return [];
 
     const newTotal = totalCurrent + investAmount;
 
-    // 카테고리별 자산 목록
     const catAssets: Record<string, Asset[]> = {};
     for (const a of assets) {
       if (!catAssets[a.categoryId]) catAssets[a.categoryId] = [];
       catAssets[a.categoryId].push(a);
     }
 
-    // 카테고리 단위 gap → investCap(매입원가 기준) 적용 → 초과분은 uncapped 자산으로
-    const effectiveGaps: Map<string, number> = new Map();
-    const cappedAssets: Set<string> = new Set(); // 한도 소진/제한된 자산
+    const effectiveAllocations = new Map<string, number>();
+    const cappedAssets = new Set<string>();
 
-    for (const cat of categories) {
-      const group = catAssets[cat.id] ?? [];
-      if (group.length === 0) continue;
-
-      // 카테고리 전체 현재가 vs 목표금액 → 카테고리 단위 gap
-      const catCurrentValue = group.reduce((s, a) => s + a.shares * a.currentPrice, 0);
-      const catTarget = newTotal * (cat.targetPercent / 100);
-      let catGap = Math.max(0, catTarget - catCurrentValue);
-
-      // 자산별 investCap 처리: 매입원가(averagePrice×shares) 기준으로 잔여한도 계산
-      const cappedWithRemaining: { a: Asset; remaining: number }[] = [];
-      const uncappedAssets: Asset[] = [];
-
-      for (const a of group) {
-        if (a.investCap != null) {
-          const costBasis = a.averagePrice * a.shares;
-          const remaining = Math.max(0, a.investCap - costBasis);
-          if (remaining <= 0) {
-            // 한도 완전 소진 → 매수 불가
-            effectiveGaps.set(a.id, 0);
-            cappedAssets.add(a.id);
-          } else {
-            cappedWithRemaining.push({ a, remaining });
-          }
-        } else {
-          uncappedAssets.push(a);
-        }
+    if (mode === 'normal') {
+      // Mode 1: 투자금을 목표 비중 그대로 분배
+      for (const cat of categories) {
+        const group = catAssets[cat.id] ?? [];
+        if (group.length === 0) continue;
+        const catBudget = investAmount * (cat.targetPercent / 100);
+        distributeBudget(group, catBudget, effectiveAllocations, cappedAssets);
       }
-
-      // 한도 잔여 자산: catGap 내에서 잔여한도까지 순서대로 채움
-      let remainingCatGap = catGap;
-      for (const { a, remaining } of cappedWithRemaining) {
-        const isCappedByLimit = remaining <= remainingCatGap;
-        const allocated = Math.min(remaining, remainingCatGap);
-        effectiveGaps.set(a.id, allocated);
-        remainingCatGap -= allocated;
-        if (isCappedByLimit) cappedAssets.add(a.id); // investCap이 binding
+    } else {
+      // Mode 2: corrective — 부족한 자산 우선 매수 (기존 로직)
+      for (const cat of categories) {
+        const group = catAssets[cat.id] ?? [];
+        if (group.length === 0) continue;
+        const catCurrentValue = group.reduce((s, a) => s + a.shares * a.currentPrice, 0);
+        const catTarget = newTotal * (cat.targetPercent / 100);
+        const catGap = Math.max(0, catTarget - catCurrentValue);
+        distributeBudget(group, catGap, effectiveAllocations, cappedAssets);
       }
-
-      // 나머지 catGap → uncapped 자산에 균등 분배
-      if (uncappedAssets.length > 0 && remainingCatGap > 0) {
-        const perUncapped = remainingCatGap / uncappedAssets.length;
-        for (const a of uncappedAssets) {
-          effectiveGaps.set(a.id, perUncapped);
+      // 전체 investAmount에 맞게 비례 축소
+      const totalGap = [...effectiveAllocations.values()].reduce((s, g) => s + g, 0);
+      const scale = totalGap > 0 ? Math.min(1, investAmount / totalGap) : 0;
+      if (scale < 1) {
+        for (const [id, v] of effectiveAllocations) {
+          effectiveAllocations.set(id, v * scale);
         }
       }
     }
 
-    // 전체 투자금 한도 내 비례 배분
-    const totalGap = [...effectiveGaps.values()].reduce((s, g) => s + g, 0);
-    const scale = totalGap > 0 ? Math.min(1, investAmount / totalGap) : 0;
-
     const rows: PlanRow[] = assets.map((a) => {
       const cat = categories.find((c) => c.id === a.categoryId)!;
       const currentValue = a.shares * a.currentPrice;
-      const rawBuy = (effectiveGaps.get(a.id) ?? 0) * scale;
+      const rawBuy = effectiveAllocations.get(a.id) ?? 0;
       const rawShares = a.currentPrice > 0 ? rawBuy / a.currentPrice : 0;
-      // 암호화폐만 소수점 수량 허용, 나머지는 정수 절사 후 금액 재계산
       const buyShares = isFractionalAsset(a) ? rawShares : Math.floor(rawShares);
       const buyAmount = isFractionalAsset(a)
         ? Math.floor(rawBuy)
         : Math.floor(buyShares * a.currentPrice);
       const newValue = currentValue + buyAmount;
-      // 목표비중은 카테고리 단위 (개별 자산 균등분배 없음)
-      const targetPct = cat ? cat.targetPercent : 0;
 
       return {
         asset: a,
         category: cat ?? { id: '', name: '-', targetPercent: 0, color: '#999' },
         currentValue,
         currentPct: totalCurrent > 0 ? (currentValue / totalCurrent) * 100 : 0,
-        targetPct,
+        targetPct: cat ? cat.targetPercent : 0,
+        catDeviation: catDeviations.get(cat?.id ?? '') ?? 0,
         buyAmount,
         buyShares,
         newValue,
@@ -131,13 +178,12 @@ export default function InvestPlan({ assets, categories }: Props) {
     });
 
     return rows.sort((a, b) => b.buyAmount - a.buyAmount);
-  }, [assets, categories, investAmount, totalCurrent]);
+  }, [assets, categories, investAmount, totalCurrent, mode, catDeviations]);
 
   const totalBuyAmount = plan.reduce((s, r) => s + r.buyAmount, 0);
   const surplus = investAmount - totalBuyAmount;
 
   function handleInput(val: string) {
-    // 숫자만 허용, 콤마 자동 포맷
     const raw = val.replace(/[^0-9]/g, '');
     if (raw === '') { setInputStr(''); return; }
     setInputStr(Number(raw).toLocaleString());
@@ -167,9 +213,32 @@ export default function InvestPlan({ assets, categories }: Props) {
       <div>
         <h2 className="font-bold text-base">적립식 투자 계획</h2>
         <p className="text-xs text-gray-400 mt-0.5">
-          투자금을 목표 비율에 맞게 분배합니다 (현재 부족한 자산 위주로 매수)
+          밴드 기반 하이브리드 리밸런싱 (임계값 ±{bandThreshold}%p)
         </p>
       </div>
+
+      {/* 모드 배너 */}
+      {mode === 'normal' ? (
+        <div className="flex items-center gap-3 bg-green-50 border border-green-200 rounded-2xl px-4 py-3">
+          <span className="text-green-500 text-lg leading-none">✓</span>
+          <div>
+            <div className="text-sm font-semibold text-green-700">밴드 내 정상 — 목표 비중대로 분배 중</div>
+            <div className="text-xs text-green-600 mt-0.5">
+              모든 자산이 목표 비중 ±{bandThreshold}%p 이내입니다
+            </div>
+          </div>
+        </div>
+      ) : (
+        <div className="flex items-start gap-3 bg-orange-50 border border-orange-200 rounded-2xl px-4 py-3">
+          <span className="text-orange-500 text-lg leading-none mt-0.5">⚠</span>
+          <div className="min-w-0">
+            <div className="text-sm font-semibold text-orange-700">밴드 이탈 감지 — 부족 자산 우선 매수 중</div>
+            <div className="text-xs text-orange-500 mt-0.5 break-words">
+              이탈: {outOfBandCats.join(' · ')}
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* 투자금 입력 */}
       <div className="bg-gray-50 rounded-2xl p-4 space-y-2">
@@ -213,98 +282,118 @@ export default function InvestPlan({ assets, categories }: Props) {
           </div>
 
           {/* 자산별 카드 */}
-          {plan.map((row) => (
-            <div key={row.asset.id}
-              className="bg-white border border-gray-100 rounded-2xl p-4 shadow-sm space-y-2">
-              <div className="flex items-start justify-between">
-                <div>
-                  <span className="font-bold text-sm">{row.asset.ticker}</span>
-                  <span className="text-xs text-gray-400 ml-2">{row.asset.name}</span>
-                  <div className="flex items-center gap-1.5 mt-0.5">
-                    <span className="text-xs text-gray-400">{row.category.name}</span>
-                    {row.capped && (
-                      <span className="text-xs px-1.5 py-0.5 rounded-full bg-orange-50 text-orange-500 font-medium">
-                        한도 적용
-                      </span>
-                    )}
+          {plan.map((row) => {
+            const isOutOfBand = Math.abs(row.catDeviation) >= bandThreshold;
+            const devSign = row.catDeviation > 0 ? '+' : '';
+
+            return (
+              <div key={row.asset.id}
+                className="bg-white border border-gray-100 rounded-2xl p-4 shadow-sm space-y-2">
+                {/* 자산 헤더 */}
+                <div className="flex items-start justify-between">
+                  <div>
+                    <span className="font-bold text-sm">{row.asset.ticker}</span>
+                    <span className="text-xs text-gray-400 ml-2">{row.asset.name}</span>
+                    <div className="flex items-center gap-1.5 mt-0.5">
+                      <span className="text-xs text-gray-400">{row.category.name}</span>
+                      {row.capped && (
+                        <span className="text-xs px-1.5 py-0.5 rounded-full bg-orange-50 text-orange-500 font-medium">
+                          한도 적용
+                        </span>
+                      )}
+                    </div>
                   </div>
+                  {row.buyAmount > 0 ? (
+                    <span className="text-xs font-semibold px-2 py-0.5 rounded-full bg-blue-50 text-blue-600">
+                      매수
+                    </span>
+                  ) : (
+                    <span className="text-xs font-semibold px-2 py-0.5 rounded-full bg-gray-100 text-gray-400">
+                      {mode === 'corrective' ? '초과' : '제외'}
+                    </span>
+                  )}
                 </div>
-                {row.buyAmount > 0 ? (
-                  <span className="text-xs font-semibold px-2 py-0.5 rounded-full bg-blue-50 text-blue-600">
-                    매수
+
+                {/* 비율 진행 바 */}
+                <div className="relative h-2 bg-gray-100 rounded-full overflow-hidden">
+                  <div
+                    className="absolute h-2 bg-gray-300 rounded-full"
+                    style={{ width: `${Math.min(row.currentPct, 100)}%` }}
+                  />
+                  <div
+                    className="absolute h-2 bg-blue-500 rounded-full transition-all"
+                    style={{
+                      left: `${Math.min(row.currentPct, 100)}%`,
+                      width: `${Math.min(row.newPct - row.currentPct, 100 - row.currentPct)}%`,
+                    }}
+                  />
+                  {/* 목표선 */}
+                  <div
+                    className="absolute h-4 w-0.5 bg-red-400 top-1/2 -translate-y-1/2"
+                    style={{ left: `${Math.min(row.targetPct, 100)}%` }}
+                  />
+                </div>
+
+                {/* 비율 텍스트: 현재%(편차) → 매수 후% | 목표% */}
+                <div className="flex justify-between text-xs">
+                  <span className="text-gray-400">
+                    현재 {row.currentPct.toFixed(1)}%
+                    <span className={`ml-1 font-medium ${isOutOfBand ? 'text-red-500' : 'text-gray-400'}`}>
+                      ({devSign}{row.catDeviation.toFixed(1)}%p)
+                    </span>
                   </span>
-                ) : (
-                  <span className="text-xs font-semibold px-2 py-0.5 rounded-full bg-gray-100 text-gray-400">
-                    초과
-                  </span>
+                  <span className="text-blue-500 font-medium">→ {row.newPct.toFixed(1)}%</span>
+                  <span className="text-gray-400">목표 {row.targetPct.toFixed(1)}%</span>
+                </div>
+
+                {/* 매수 상세 */}
+                {row.buyAmount > 0 && (
+                  <div className="bg-blue-50 rounded-xl p-3 space-y-1.5">
+                    <div className="flex justify-between text-sm font-semibold text-blue-700">
+                      <span>▲ ₩{formatKRW(row.buyAmount)}</span>
+                      <span>{formatShares(row.buyShares, row.asset)}</span>
+                    </div>
+                    <div className="text-xs text-blue-400">
+                      현재가 ₩{formatKRW(row.asset.currentPrice)} 기준
+                    </div>
+                    <div className="flex items-center gap-1.5 text-xs pt-0.5 border-t border-blue-100">
+                      <span className="text-gray-500">평가금액</span>
+                      <span className="font-medium text-gray-600">₩{formatKRW(row.currentValue)}</span>
+                      <span className="text-blue-400">→</span>
+                      <span className="font-semibold text-blue-700">₩{formatKRW(row.newValue)}</span>
+                    </div>
+                  </div>
+                )}
+
+                {row.buyAmount === 0 && (
+                  <div className="bg-gray-50 rounded-xl p-3 space-y-1">
+                    <div className="text-xs text-gray-400 text-center">
+                      {row.capped
+                        ? '투자 한도 소진 — 이번 투자에서 제외'
+                        : mode === 'corrective'
+                        ? '목표 비율 초과 — 이번 투자에서 제외'
+                        : '해당 없음'}
+                    </div>
+                    <div className="flex items-center justify-center gap-1.5 text-xs pt-0.5 border-t border-gray-200">
+                      <span className="text-gray-500">평가금액</span>
+                      <span className="font-semibold text-gray-700">₩{formatKRW(row.currentValue)}</span>
+                    </div>
+                  </div>
                 )}
               </div>
-
-              {/* 비율 진행 바: 현재 → 매수 후 */}
-              <div className="relative h-2 bg-gray-100 rounded-full overflow-hidden">
-                <div
-                  className="absolute h-2 bg-gray-300 rounded-full"
-                  style={{ width: `${Math.min(row.currentPct, 100)}%` }}
-                />
-                <div
-                  className="absolute h-2 bg-blue-500 rounded-full transition-all"
-                  style={{
-                    left: `${Math.min(row.currentPct, 100)}%`,
-                    width: `${Math.min(row.newPct - row.currentPct, 100 - row.currentPct)}%`,
-                  }}
-                />
-                {/* 목표선 */}
-                <div
-                  className="absolute h-4 w-0.5 bg-red-400 top-1/2 -translate-y-1/2"
-                  style={{ left: `${Math.min(row.targetPct, 100)}%` }}
-                />
-              </div>
-              <div className="flex justify-between text-xs text-gray-400">
-                <span>현재 {row.currentPct.toFixed(1)}%</span>
-                <span className="text-blue-500 font-medium">→ {row.newPct.toFixed(1)}%</span>
-                <span>목표 {row.targetPct.toFixed(1)}%</span>
-              </div>
-
-              {/* 매수 상세 */}
-              {row.buyAmount > 0 && (
-                <div className="bg-blue-50 rounded-xl p-3 space-y-1.5">
-                  <div className="flex justify-between text-sm font-semibold text-blue-700">
-                    <span>▲ ₩{formatKRW(row.buyAmount)}</span>
-                    <span>{formatShares(row.buyShares, row.asset)}</span>
-                  </div>
-                  <div className="text-xs text-blue-400">
-                    현재가 ₩{formatKRW(row.asset.currentPrice)} 기준
-                  </div>
-                  <div className="flex items-center gap-1.5 text-xs pt-0.5 border-t border-blue-100">
-                    <span className="text-gray-500">평가금액</span>
-                    <span className="font-medium text-gray-600">₩{formatKRW(row.currentValue)}</span>
-                    <span className="text-blue-400">→</span>
-                    <span className="font-semibold text-blue-700">₩{formatKRW(row.newValue)}</span>
-                  </div>
-                </div>
-              )}
-
-              {row.buyAmount === 0 && (
-                <div className="bg-gray-50 rounded-xl p-3 space-y-1">
-                  <div className="text-xs text-gray-400 text-center">
-                    목표 비율 초과 — 이번 투자에서 제외
-                  </div>
-                  <div className="flex items-center justify-center gap-1.5 text-xs pt-0.5 border-t border-gray-200">
-                    <span className="text-gray-500">평가금액</span>
-                    <span className="font-semibold text-gray-700">₩{formatKRW(row.currentValue)}</span>
-                  </div>
-                </div>
-              )}
-            </div>
-          ))}
+            );
+          })}
 
           {/* 잔여금 안내 */}
           {surplus > 200 && (
             <div className="bg-yellow-50 border border-yellow-200 rounded-2xl p-4 text-sm text-yellow-700">
               <strong>₩{formatKRW(surplus)}</strong> 잔여금이 있습니다.
               <br />
-              <span className="text-xs">모든 자산이 이미 목표 비율을 초과했거나,
-              현재가 데이터 확인이 필요합니다.</span>
+              <span className="text-xs">
+                {mode === 'corrective'
+                  ? '모든 자산이 이미 목표 비율을 초과했거나, 현재가 데이터 확인이 필요합니다.'
+                  : '투자 한도(ISA 등)로 일부 자산의 매수가 제한되었습니다.'}
+              </span>
             </div>
           )}
         </>
