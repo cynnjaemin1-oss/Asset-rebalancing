@@ -5,9 +5,11 @@ interface Props {
   onSave: (key: string) => void;
   onExport: () => void;
   onImport: (file: File) => void;
+  bandThreshold: number;
+  onBandThresholdChange: (v: number) => void;
 }
 
-export default function SettingsModal({ isOpen, onClose, apiKey, onSave, onExport, onImport }: Props) {
+export default function SettingsModal({ isOpen, onClose, apiKey, onSave, onExport, onImport, bandThreshold, onBandThresholdChange }: Props) {
   if (!isOpen) return null;
 
   return (
@@ -63,6 +65,32 @@ export default function SettingsModal({ isOpen, onClose, apiKey, onSave, onExpor
           >
             저장
           </button>
+        </div>
+
+        {/* 밴드 임계값 설정 */}
+        <div className="space-y-3 border-t border-gray-100 pt-4">
+          <div>
+            <div className="font-semibold text-sm">투자계획 밴드 임계값</div>
+            <div className="text-xs text-gray-400 mt-0.5">
+              카테고리 비중이 목표에서 이 값 이상 벗어나면 부족 자산 우선 매수 모드로 전환합니다.
+            </div>
+          </div>
+          <div className="flex items-center gap-3">
+            <input
+              type="range"
+              min={5}
+              max={10}
+              step={1}
+              value={bandThreshold}
+              onChange={(e) => onBandThresholdChange(Number(e.target.value))}
+              className="flex-1 accent-black h-2"
+            />
+            <span className="text-sm font-bold w-16 text-right shrink-0">±{bandThreshold}%p</span>
+          </div>
+          <div className="flex justify-between text-xs text-gray-400 px-0.5">
+            <span>±5%p (타이트)</span>
+            <span>±10%p (느슨)</span>
+          </div>
         </div>
 
         <div className="space-y-3 border-t border-gray-100 pt-4">

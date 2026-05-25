@@ -35,6 +35,10 @@ export default function App() {
   const [apiKey, setApiKey] = useState<string>(() =>
     localStorage.getItem('alphaVantageKey') ?? ''
   );
+  const [bandThreshold, setBandThreshold] = useState<number>(() => {
+    const stored = localStorage.getItem('bandThreshold');
+    return stored ? Number(stored) : 7;
+  });
 
   useEffect(() => {
     localStorage.setItem('assets', JSON.stringify(assets));
@@ -43,6 +47,10 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem('categories', JSON.stringify(categories));
   }, [categories]);
+
+  useEffect(() => {
+    localStorage.setItem('bandThreshold', String(bandThreshold));
+  }, [bandThreshold]);
 
   function saveApiKey(key: string) {
     setApiKey(key);
@@ -112,7 +120,7 @@ export default function App() {
     ),
     allocation: <AllocationSettings categories={categories} onUpdate={setCategories} />,
     rebalance: <RebalancingCalc assets={assets} categories={categories} />,
-    invest: <InvestPlan assets={assets} categories={categories} />,
+    invest: <InvestPlan assets={assets} categories={categories} bandThreshold={bandThreshold} />,
   };
 
   return (
@@ -130,6 +138,8 @@ export default function App() {
         onSave={saveApiKey}
         onExport={exportData}
         onImport={importData}
+        bandThreshold={bandThreshold}
+        onBandThresholdChange={setBandThreshold}
       />
     </Layout>
   );
