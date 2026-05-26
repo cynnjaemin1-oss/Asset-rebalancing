@@ -12,6 +12,7 @@ interface PlanRow {
   asset: Asset;
   category: Category;
   currentValue: number;
+  costBasis: number;
   currentPct: number;
   targetPct: number;
   catDeviation: number;
@@ -20,6 +21,7 @@ interface PlanRow {
   newValue: number;
   newPct: number;
   capped: boolean;
+  capExhausted: boolean;
 }
 
 // investCap을 존중하며 budget을 자산 그룹에 분배
@@ -154,7 +156,12 @@ export default function InvestPlan({ assets, categories, bandThreshold }: Props)
     const rows: PlanRow[] = assets.map((a) => {
       const cat = categories.find((c) => c.id === a.categoryId)!;
       const currentValue = a.shares * a.currentPrice;
-      const rawBuy = effectiveAllocations.get(a.id) ?? 0;
+      const costBasis = a.averagePrice * a.shares;
+
+      // investCap 하드체크: costBasis가 한도 이상이면 어떤 경우에도 매수 0
+      const capExhausted = a.investCap != null && costBasis >= a.investCap;
+
+      const rawBuy = capExhausted ? 0 : (effectiveAllocations.get(a.id) ?? 0);
       const rawShares = a.currentPrice > 0 ? rawBuy / a.currentPrice : 0;
       const buyShares = isFractionalAsset(a) ? rawShares : Math.floor(rawShares);
       const buyAmount = isFractionalAsset(a)
@@ -166,6 +173,7 @@ export default function InvestPlan({ assets, categories, bandThreshold }: Props)
         asset: a,
         category: cat ?? { id: '', name: '-', targetPercent: 0, color: '#999' },
         currentValue,
+        costBasis,
         currentPct: totalCurrent > 0 ? (currentValue / totalCurrent) * 100 : 0,
         targetPct: cat ? cat.targetPercent : 0,
         catDeviation: catDeviations.get(cat?.id ?? '') ?? 0,
@@ -173,7 +181,8 @@ export default function InvestPlan({ assets, categories, bandThreshold }: Props)
         buyShares,
         newValue,
         newPct: newTotal > 0 ? (newValue / newTotal) * 100 : 0,
-        capped: cappedAssets.has(a.id),
+        capped: capExhausted || cappedAssets.has(a.id),
+        capExhausted,
       };
     });
 
@@ -296,7 +305,12 @@ export default function InvestPlan({ assets, categories, bandThreshold }: Props)
                     <span className="text-xs text-gray-400 ml-2">{row.asset.name}</span>
                     <div className="flex items-center gap-1.5 mt-0.5">
                       <span className="text-xs text-gray-400">{row.category.name}</span>
-                      {row.capped && (
+                      {row.capExhausted && (
+                        <span className="text-xs px-1.5 py-0.5 rounded-full bg-red-50 text-red-500 font-medium">
+                          한도 소진
+                        </span>
+                      )}
+                      {!row.capExhausted && row.capped && (
                         <span className="text-xs px-1.5 py-0.5 rounded-full bg-orange-50 text-orange-500 font-medium">
                           한도 적용
                         </span>
@@ -309,7 +323,7 @@ export default function InvestPlan({ assets, categories, bandThreshold }: Props)
                     </span>
                   ) : (
                     <span className="text-xs font-semibold px-2 py-0.5 rounded-full bg-gray-100 text-gray-400">
-                      {mode === 'corrective' ? '초과' : '제외'}
+                      {row.capExhausted ? '한도 소진' : mode === 'corrective' ? '초과' : '제외'}
                     </span>
                   )}
                 </div>
@@ -362,22 +376,41 @@ export default function InvestPlan({ assets, categories, bandThreshold }: Props)
                       <span className="text-blue-400">→</span>
                       <span className="font-semibold text-blue-700">₩{formatKRW(row.newValue)}</span>
                     </div>
+                    {row.asset.investCap != null && (
+                      <div className="flex justify-between text-xs pt-0.5 border-t border-blue-100">
+                        <span className="text-blue-400">납입 / 한도</span>
+                        <span className="text-blue-600 font-medium">
+                          ₩{formatKRW(row.costBasis)} / ₩{formatKRW(row.asset.investCap)}
+                          <span className="text-blue-400 ml-1">(잔여 ₩{formatKRW(row.asset.investCap - row.costBasis)})</span>
+                        </span>
+                      </div>
+                    )}
                   </div>
                 )}
 
                 {row.buyAmount === 0 && (
-                  <div className="bg-gray-50 rounded-xl p-3 space-y-1">
-                    <div className="text-xs text-gray-400 text-center">
-                      {row.capped
-                        ? '투자 한도 소진 — 이번 투자에서 제외'
+                  <div className={`rounded-xl p-3 space-y-1.5 ${row.capExhausted ? 'bg-red-50' : 'bg-gray-50'}`}>
+                    <div className={`text-xs text-center font-medium ${row.capExhausted ? 'text-red-500' : 'text-gray-400'}`}>
+                      {row.capExhausted
+                        ? 'ISA 납입 한도 소진 — 이번 투자에서 제외'
                         : mode === 'corrective'
                         ? '목표 비율 초과 — 이번 투자에서 제외'
                         : '해당 없음'}
                     </div>
-                    <div className="flex items-center justify-center gap-1.5 text-xs pt-0.5 border-t border-gray-200">
-                      <span className="text-gray-500">평가금액</span>
-                      <span className="font-semibold text-gray-700">₩{formatKRW(row.currentValue)}</span>
-                    </div>
+                    {row.asset.investCap != null && (
+                      <div className={`flex justify-between text-xs pt-1 border-t ${row.capExhausted ? 'border-red-100' : 'border-gray-200'}`}>
+                        <span className="text-gray-500">납입 / 한도</span>
+                        <span className={`font-semibold ${row.capExhausted ? 'text-red-600' : 'text-gray-700'}`}>
+                          ₩{formatKRW(row.costBasis)} / ₩{formatKRW(row.asset.investCap)}
+                        </span>
+                      </div>
+                    )}
+                    {row.asset.investCap == null && (
+                      <div className="flex items-center justify-center gap-1.5 text-xs pt-0.5 border-t border-gray-200">
+                        <span className="text-gray-500">평가금액</span>
+                        <span className="font-semibold text-gray-700">₩{formatKRW(row.currentValue)}</span>
+                      </div>
+                    )}
                   </div>
                 )}
               </div>
