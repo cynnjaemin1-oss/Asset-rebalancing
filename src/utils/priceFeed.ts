@@ -30,17 +30,66 @@ async function fetchWithProxy(url: string): Promise<unknown> {
   }
 }
 
-// ── Naver Finance (국내 주식/ETF) ─────────────────────────────────────────────
+// ── 국내 주식/ETF ─────────────────────────────────────────────────────────────
+// 전략: Yahoo Finance .KS/.KQ 1순위 (기존 프록시 인프라 재사용, 가장 안정적)
+//       Naver polling API 2순위 (m.stock.naver.com보다 덜 막힘)
+//       Naver mobile API 3순위 (백업)
+//       세 전략을 동시에 시작해 가장 먼저 성공한 값 사용
 async function fetchNaverPrice(code: string): Promise<number> {
+  const parseNum = (raw: unknown): number => {
+    const n = typeof raw === 'string' ? Number((raw as string).replace(/,/g, '')) : Number(raw);
+    if (isNaN(n) || n === 0) throw new Error('parse fail');
+    return n;
+  };
+
+  // 1순위: Yahoo Finance .KS(코스피)·.KQ(코스닥) 동시 시도 — 프록시 차단 없음
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const data = (await fetchWithProxy(
+  const tryYahoo = Promise.any([
+    fetchWithProxy(
+      `https://query2.finance.yahoo.com/v7/finance/quote?symbols=${code}.KS,${code}.KQ`,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    ).then((d: any) => {
+      const p = (d?.quoteResponse?.result ?? []).find((r: any) => r?.regularMarketPrice)
+        ?.regularMarketPrice as number;
+      if (!p) throw new Error('yahoo v7 no price');
+      return p;
+    }),
+    fetchWithProxy(
+      `https://query1.finance.yahoo.com/v8/finance/chart/${code}.KS?interval=1d&range=1d`,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    ).then((d: any) => {
+      const p = d?.chart?.result?.[0]?.meta?.regularMarketPrice as number;
+      if (!p) throw new Error('yahoo v8 no price');
+      return p;
+    }),
+  ]);
+
+  // 2순위: Naver polling API (m.stock.naver.com보다 차단율 낮음)
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const tryNaverPolling = fetchWithProxy(
+    `https://polling.finance.naver.com/api/realtime?query=SERVICE_ITEM:${code}`,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  ).then((d: any) => {
+    const item = d?.result?.areas?.[0]?.datas?.[0];
+    const raw = item?.nv ?? item?.closePrice ?? item?.price;
+    if (raw == null) throw new Error('naver polling no price');
+    return parseNum(raw);
+  });
+
+  // 3순위: Naver 모바일 API (기존 방식, 백업)
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const tryNaverMobile = fetchWithProxy(
     `https://m.stock.naver.com/api/stock/${code}/basic`,
-  )) as any;
-  const raw = data?.closePrice ?? data?.stockEndPrice ?? data?.price;
-  if (raw == null) throw new Error('가격 데이터 없음 (코드 확인 필요)');
-  const price = typeof raw === 'string' ? Number(raw.replace(/,/g, '')) : Number(raw);
-  if (isNaN(price) || price === 0) throw new Error('가격 파싱 실패');
-  return price;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  ).then((d: any) => {
+    const raw = d?.closePrice ?? d?.stockEndPrice ?? d?.price;
+    if (raw == null) throw new Error('naver mobile no price');
+    return parseNum(raw);
+  });
+
+  return Promise.any([tryYahoo, tryNaverPolling, tryNaverMobile]).catch(() => {
+    throw new Error('가격 데이터 없음 (코드 확인 필요)');
+  });
 }
 
 // ── KRX 금현물 (원/g) ─────────────────────────────────────────────────────────
